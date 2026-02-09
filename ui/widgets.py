@@ -1,0 +1,912 @@
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
+    QCheckBox, QPushButton, QListWidget, QListWidgetItem, 
+    QFrame, QProgressBar, QScrollArea, QTextEdit, QGridLayout, QSizePolicy
+)
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QFont, QPixmap
+from datetime import datetime
+from config import APP_NAME, VERSION, APP_NAME_COLOR
+from core.fapello_client import get_total_files
+from core.downloader_progress import download_orchestrator_with_progress
+from multiprocessing import Queue
+import os
+from pathlib import Path
+
+
+class FetchWorker(QThread):
+    """Worker thread para buscar informações sem bloquear a UI."""
+    finished = Signal(dict)
+    error = Signal(str)
+    
+    def __init__(self, url: str):
+        super().__init__()
+        self.url = url
+    
+    def run(self):
+        try:
+            if not self.url.strip():
+                self.error.emit("URL vazia!")
+                return
+            
+            total_files = get_total_files(self.url)
+            # Extract model name robustly (handle trailing slash)
+            parts = [p for p in self.url.split("/") if p]
+            pasta = parts[-1] if parts else ""
+            
+            self.finished.emit({
+                "total": total_files,
+                "pasta": pasta
+            })
+        except Exception as e:
+            self.error.emit(f"Erro ao buscar: {str(e)}")
+
+
+class DownloadWorker(QThread):
+    """Worker thread para baixar arquivos sem bloquear a UI."""
+    progress_update = Signal(dict)  # Emite atualizações de progresso
+    finished = Signal()
+    error = Signal(str)
+    
+    def __init__(self, url: str, download_images: bool, download_videos: bool, total_files: int):
+        super().__init__()
+        self.url = url
+        self.download_images = download_images
+        self.download_videos = download_videos
+        self.total_files = total_files
+    
+    def progress_callback(self, data):
+        """Callback for progress updates from downloader."""
+        if data["type"] == "file_start":
+            self.progress_update.emit({
+                "type": "file_start",
+                "filename": data["filename"],
+                "index": data["index"]
+            })
+        elif data["type"] == "file_complete":
+            success_count = data.get("success", 0)
+            # Calculate percentage based on actual downloads
+            progress_percent = int((success_count / self.total_files) * 100) if self.total_files > 0 else 0
+            self.progress_update.emit({
+                "type": "file_complete",
+                "filename": data["filename"],
+                "index": data["index"],
+                "count": success_count,
+                "total": self.total_files,
+                "percent": progress_percent
+            })
+        elif data["type"] == "file_skipped":
+            self.progress_update.emit({
+                "type": "file_skipped",
+                "index": data["index"],
+                "reason": data["reason"]
+            })
+        elif data["type"] == "file_error":
+            self.progress_update.emit({
+                "type": "file_error",
+                "filename": data["filename"],
+                "error": data.get("error", ""),
+                "success": data.get("success", 0),
+                "failed": data.get("failed", 0)
+            })
+        elif data["type"] == "summary":
+            self.progress_update.emit({
+                "type": "summary",
+                "total_expected": data["total_expected"],
+                "success": data["success"],
+                "failed": data["failed"],
+                "skipped": data["skipped"],
+                "failed_indices": data["failed_indices"]
+            })
+        elif data["type"] == "status":
+            self.progress_update.emit({
+                "type": "status",
+                "status": data["status"]
+            })
+    
+    def run(self):
+        try:
+            download_orchestrator_with_progress(
+                self.url, 
+                workers=4,
+                progress_callback=self.progress_callback
+            )
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(f"Erro no download: {str(e)}")
+
+
+
+
+
+def build_ui(parent):
+    """Build and configure the UI elements for the application window."""
+    
+    # Central widget
+    central_widget = QWidget()
+    main_layout = QVBoxLayout(central_widget)
+    main_layout.setContentsMargins(0, 0, 0, 0)
+    main_layout.setSpacing(0)
+    
+    # Top section with link input and buttons
+    top_section, link_input = create_top_section(central_widget)
+    main_layout.addWidget(top_section)
+    
+    # Middle section with left panel and right models list
+    middle_section, labels_dict, checkboxes_dict, models_list = create_middle_section()
+    main_layout.addWidget(middle_section, 1)
+    
+    # Bottom section with progress and log areas
+    bottom_section, progress_bar, progress_label, log_widget, thumbnails_container = create_bottom_section()
+    main_layout.addWidget(bottom_section, 1)
+    
+    # Store references for later access
+    central_widget.link_input = link_input
+    central_widget.labels = labels_dict
+    central_widget.checkboxes = checkboxes_dict
+    central_widget.progress_bar = progress_bar
+    central_widget.progress_label = progress_label
+    central_widget.log_widget = log_widget
+    central_widget.models_list = models_list
+    central_widget.thumbnails_container = thumbnails_container
+    # default number of columns for thumbnails grid
+    central_widget.thumbnails_columns = 4
+    
+    # Carregar modelos já baixados
+    refresh_downloaded_models_list(central_widget)
+    
+    return central_widget
+
+
+def create_top_section(parent):
+    """Create the top section with link input and buttons."""
+    top_widget = QFrame()
+    top_widget.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #333;")
+    layout = QHBoxLayout(top_widget)
+    layout.setContentsMargins(15, 10, 15, 10)
+    layout.setSpacing(10)
+    
+    # Link label
+    link_label = QLabel("Link:")
+    link_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+    layout.addWidget(link_label)
+    
+    # Link input
+    link_input = QLineEdit()
+    link_input.setPlaceholderText("https://fapello.com/...")
+    link_input.setStyleSheet("""
+        QLineEdit {
+            background-color: #2d2d2d;
+            color: #ffffff;
+            border: 1px solid #444;
+            padding: 5px;
+            border-radius: 3px;
+        }
+    """)
+    link_input.setMinimumHeight(32)
+    layout.addWidget(link_input, 1)
+    
+    # Checar button - starts disabled
+    checar_btn = QPushButton("Checar")
+    checar_btn.setMinimumWidth(80)
+    checar_btn.setMinimumHeight(32)
+    checar_btn.setEnabled(False)
+    checar_btn.setStyleSheet("""
+        QPushButton {
+            background-color: #2d2d2d;
+            color: #ffffff;
+            border: 1px solid #444;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        QPushButton:hover:!disabled {
+            background-color: #3d3d3d;
+        }
+        QPushButton:pressed {
+            background-color: #444;
+        }
+        QPushButton:disabled {
+            color: #666;
+            background-color: #1a1a1a;
+            border: 1px solid #333;
+        }
+    """)
+    checar_btn.parent_widget = parent
+    checar_btn.link_input = link_input
+    layout.addWidget(checar_btn)
+    
+    # Download button - starts disabled and hidden
+    download_btn = QPushButton("DOWNLOAD")
+    download_btn.setMinimumWidth(100)
+    download_btn.setMinimumHeight(32)
+    download_btn.setEnabled(False)
+    download_btn.setVisible(False)
+    download_btn.setStyleSheet(f"""
+        QPushButton {{
+            background-color: {APP_NAME_COLOR};
+            color: #000000;
+            border: none;
+            border-radius: 3px;
+            font-weight: bold;
+        }}
+        QPushButton:hover:!disabled {{
+            background-color: #ffc933;
+        }}
+        QPushButton:pressed {{
+            background-color: #e6a800;
+        }}
+        QPushButton:disabled {{
+            background-color: #999;
+            color: #666;
+        }}
+    """)
+    layout.addWidget(download_btn)
+    
+    # Catálogo button
+    catalogo_btn = QPushButton("Catálogo")
+    catalogo_btn.setMinimumWidth(80)
+    catalogo_btn.setMinimumHeight(32)
+    catalogo_btn.setStyleSheet("""
+        QPushButton {
+            background-color: #2d2d2d;
+            color: #ffffff;
+            border: 1px solid #444;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        QPushButton:hover {
+            background-color: #3d3d3d;
+        }
+        QPushButton:pressed {
+            background-color: #444;
+        }
+    """)
+    layout.addWidget(catalogo_btn)
+    
+    # Store buttons in parent for external access
+    parent.checar_btn = checar_btn
+    parent.download_btn = download_btn
+    
+    # Connect link input to enable/disable checar button
+    def on_link_changed():
+        has_text = len(link_input.text().strip()) > 0
+        checar_btn.setEnabled(has_text)
+        # Reset download button when link changes
+        if has_text:
+            download_btn.setVisible(False)
+            download_btn.setEnabled(False)
+    
+    link_input.textChanged.connect(on_link_changed)
+    
+    # Connect checar button to fetch function
+    def on_checar_clicked():
+        url = link_input.text().strip()
+        if not url:
+            parent.labels["status"].setText("Status: URL vazia!")
+            return
+        
+        # Log message
+        add_log_message(parent.log_widget, f"🔍 Buscando informações da URL: {url}")
+        
+        # Disable checar button during fetch
+        checar_btn.setEnabled(False)
+        parent.labels["status"].setText("Status: Buscando...")
+        
+        # Create worker thread
+        worker = FetchWorker(url)
+        worker.finished.connect(lambda data: on_fetch_complete(parent, data, checar_btn, download_btn))
+        worker.error.connect(lambda err: on_fetch_error(parent, err, checar_btn))
+        worker.start()
+        parent.fetch_worker = worker  # Store reference to prevent garbage collection
+    
+    checar_btn.clicked.connect(on_checar_clicked)
+    
+    # Connect download button to download function
+    def on_download_clicked():
+        url = link_input.text().strip()
+        if not url:
+            parent.labels["status"].setText("Status: URL vazia!")
+            return
+        
+        # Get checkbox states
+        download_images = parent.checkboxes["imagens"].isChecked()
+        download_videos = parent.checkboxes["videos"].isChecked()
+        
+        if not download_images and not download_videos:
+            parent.labels["status"].setText("Status: Selecione imagens ou vídeos!")
+            return
+        
+        # Get total files from label
+        total_text = parent.labels["total"].text()
+        try:
+            total_files = int(total_text.split(": ")[1])
+        except:
+            total_files = 0
+        
+        # Log message
+        download_types = []
+        if download_images:
+            download_types.append("imagens")
+        if download_videos:
+            download_types.append("vídeos")
+        add_log_message(parent.log_widget, f"⬇️  Iniciando download de {', '.join(download_types)} ({total_files} arquivo(s))")
+        
+        # Limpar thumbnails anteriores
+        flow_widget = parent.thumbnails_container
+        flow_layout = flow_widget.layout()
+        if flow_layout:
+            # Remove all widgets except the stretch
+            while flow_layout.count() > 0:
+                item = flow_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+        
+        # Disable download button during download
+        download_btn.setEnabled(False)
+        checar_btn.setEnabled(False)
+        parent.labels["status"].setText("Status: Baixando...")
+        parent.progress_bar.setValue(0)
+        
+        # Create download worker thread
+        download_worker = DownloadWorker(url, download_images, download_videos, total_files)
+        download_worker.progress_update.connect(lambda data: on_download_progress_update(parent, data))
+        download_worker.finished.connect(lambda: on_download_complete(parent, checar_btn, download_btn))
+        download_worker.error.connect(lambda err: on_download_error(parent, err, checar_btn, download_btn))
+        download_worker.start()
+        parent.download_worker = download_worker  # Store reference
+    
+    download_btn.clicked.connect(on_download_clicked)
+    
+    return top_widget, link_input
+
+
+def on_fetch_complete(parent, data, checar_btn, download_btn):
+    """Handle successful fetch."""
+    parent.labels["total"].setText(f"Total: {data['total']}")
+    parent.labels["pasta"].setText(f"Pasta: {data['pasta']}")
+    parent.labels["status"].setText("Status: Pronto")
+    parent.progress_bar.setMaximum(data['total'])
+    parent.progress_label.setText(f"0 / {data['total']} arquivos (0%)")
+    
+    # Log message
+    add_log_message(parent.log_widget, f"✓ Busca concluída: {data['total']} arquivo(s) encontrado(s)")
+    add_log_message(parent.log_widget, f"Pasta definida: {data['pasta']}")
+    
+    # Enable download button and show it
+    download_btn.setVisible(True)
+    download_btn.setEnabled(True)
+    
+    # Keep checar button disabled until link changes
+
+
+def on_fetch_error(parent, error, checar_btn):
+    """Handle fetch error and re-enable checar button."""
+    parent.labels["status"].setText(f"Status: Erro")
+    
+    # Log message
+    add_log_message(parent.log_widget, f"✗ Erro na busca: {error}", error=True)
+    
+    # Re-enable checar button to allow retry
+    checar_btn.setEnabled(True)
+
+
+def on_download_progress_update(parent, data):
+    """Handle detailed download progress updates."""
+    if data["type"] == "file_start":
+        # Arquivo iniciou o download
+        filename = data['filename']
+        index = data['index']
+        parent.labels["arquivo"].setText(f"Arquivo: {filename}")
+        add_log_message(parent.log_widget, f"→ Baixando [{index}] {filename}...")
+    
+    elif data["type"] == "file_complete":
+        # Arquivo foi baixado com sucesso
+        count = data.get("count", 0)
+        total = data.get("total", 0)
+        percent = data.get("percent", 0)
+        filename = data['filename']
+        
+        # Atualizar progress bar
+        parent.progress_bar.setValue(count)
+        
+        # Atualizar label de progresso
+        parent.progress_label.setText(f"{count} / {total} arquivos ({percent}%)")
+        
+        # Atualizar label de arquivo
+        parent.labels["arquivo"].setText(f"Arquivo: {filename}")
+        
+        # Log message
+        add_log_message(parent.log_widget, f"✓ Concluído [{count}/{total}] {filename}")
+        
+        # Tentar adicionar thumbnail
+        # Construir caminho do arquivo baseado no padrão catalog/models/[model_name]/[filename]
+        pasta = parent.labels["pasta"].text().split(": ")[1] if ": " in parent.labels["pasta"].text() else ""
+        if pasta:
+            model_path = Path("catalog") / "models" / pasta
+            file_path = model_path / filename
+            add_log_message(parent.log_widget, f"Tentando thumbnail: {file_path}")
+            if file_path.exists():
+                add_log_message(parent.log_widget, f"Thumbnail encontrado: {file_path}")
+                add_thumbnail(parent, str(file_path))
+            else:
+                add_log_message(parent.log_widget, f"Thumbnail não encontrado no caminho exato: {file_path}", warning=True)
+                # procura por arquivos com mesma extensão no diretório do modelo
+                try:
+                    if model_path.exists():
+                        found = False
+                        for p in model_path.rglob(f"*{Path(filename).suffix}"):
+                            add_log_message(parent.log_widget, f"Procurando alternativa: {p}")
+                            if filename.split("_")[-1] in p.name or str(filename) == p.name:
+                                add_log_message(parent.log_widget, f"Alternativa encontrada: {p}")
+                                add_thumbnail(parent, str(p))
+                                found = True
+                                break
+                        if not found:
+                            add_log_message(parent.log_widget, "Nenhuma thumbnail encontrada no diretório do modelo.", warning=True)
+                except Exception as e:
+                    add_log_message(parent.log_widget, f"Erro ao procurar thumbnail: {e}", error=True)
+    
+    elif data["type"] == "file_skipped":
+        # Arquivo não estava disponível
+        index = data['index']
+        reason = data.get('reason', 'indisponível')
+        add_log_message(parent.log_widget, f"⊘ Pulado [{index}] {reason}", warning=True)
+    
+    elif data["type"] == "file_error":
+        # Erro ao baixar arquivo
+        filename = data['filename']
+        error = data.get('error', 'erro desconhecido')
+        parent.labels["status"].setText(f"Status: Erro ao baixar {filename}")
+        add_log_message(parent.log_widget, f"✗ Erro em {filename}: {error}", error=True)
+    
+    elif data["type"] == "summary":
+        # Resumo final do download
+        total = data.get("total_expected", 0)
+        success = data.get("success", 0)
+        failed = data.get("failed", 0)
+        skipped = data.get("skipped", 0)
+        
+        # Atualizar labels com resumo
+        parent.progress_bar.setValue(success)
+        
+        summary_msg = f"{success} / {total} arquivos baixados com sucesso"
+        if failed > 0:
+            summary_msg += f" ({failed} falharam"
+            if skipped > 0:
+                summary_msg += f", {skipped} indisponíveis"
+            summary_msg += ")"
+        elif skipped > 0:
+            summary_msg += f" ({skipped} indisponíveis)"
+        
+        parent.progress_label.setText(summary_msg)
+        
+        # Log message with summary
+        add_log_message(parent.log_widget, f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        add_log_message(parent.log_widget, f"✓ RESUMO: {success} sucesso(s) | {failed} falha(s) | {skipped} indisponível(is)")
+        add_log_message(parent.log_widget, f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    elif data["type"] == "status":
+        # Atualizar status
+        status = data["status"]
+        parent.labels["status"].setText(f"Status: {status}")
+        add_log_message(parent.log_widget, f"• Status: {status}")
+
+
+
+def on_download_complete(parent, checar_btn, download_btn):
+    """Handle successful download completion."""
+    parent.labels["status"].setText("Status: Download concluído!")
+    add_log_message(parent.log_widget, "✓ DOWNLOAD CONCLUÍDO!")
+    
+    # Desabilitar botão de download após conclusão
+    download_btn.setEnabled(False)
+    checar_btn.setEnabled(True)
+    
+    # Atualizar lista de modelos baixados
+    refresh_downloaded_models_list(parent)
+
+
+def on_download_error(parent, error, checar_btn, download_btn):
+    """Handle download errors and re-enable buttons."""
+    parent.labels["status"].setText(f"Status: Erro - {error}")
+    add_log_message(parent.log_widget, f"✗ ERRO: {error}", error=True)
+    download_btn.setEnabled(False)
+    checar_btn.setEnabled(True)
+
+
+def get_downloaded_models():
+    """Get list of downloaded models from catalog/models directory."""
+    catalog_path = Path("catalog") / "models"
+    if not catalog_path.exists():
+        return []
+    
+    try:
+        models = [d.name for d in catalog_path.iterdir() if d.is_dir()]
+        return sorted(models)
+    except:
+        return []
+
+
+def refresh_downloaded_models_list(parent):
+    """Refresh the downloaded models list widget."""
+    if hasattr(parent, 'models_list'):
+        parent.models_list.clear()
+        models = get_downloaded_models()
+        for model in models:
+            item = QListWidgetItem(f"✓ {model}")
+            parent.models_list.addItem(item)
+
+
+def add_thumbnail(parent, file_path):
+    """Add a thumbnail to the thumbnails container."""
+    if not hasattr(parent, 'thumbnails_container'):
+        return
+    
+    # Create thumbnail label
+    thumbnail = QLabel()
+    thumbnail.setFixedSize(80, 80)
+    thumbnail.setStyleSheet("""
+        QLabel {
+            background-color: #1e1e1e;
+            border: 1px solid #444;
+            border-radius: 3px;
+        }
+    """)
+    thumbnail.setAlignment(Qt.AlignCenter)
+    
+    # Try to load and display the image
+    try:
+        pixmap = QPixmap(file_path)
+        if not pixmap.isNull():
+            # center-crop to square
+            w = pixmap.width()
+            h = pixmap.height()
+            size = min(w, h)
+            x = (w - size) // 2
+            y = (h - size) // 2
+            cropped = pixmap.copy(x, y, size, size)
+            # scale to thumbnail size (ignore aspect since already square)
+            scaled_pixmap = cropped.scaled(80, 80, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            thumbnail.setPixmap(scaled_pixmap)
+        else:
+            # Show file icon if not an image
+            thumbnail.setText("📄")
+            thumbnail.setStyleSheet("""
+                QLabel {
+                    background-color: #2d2d2d;
+                    border: 1px solid #444;
+                    border-radius: 3px;
+                    font-size: 24px;
+                }
+            """)
+    except:
+        thumbnail.setText("?")
+        thumbnail.setStyleSheet("""
+            QLabel {
+                background-color: #2d2d2d;
+                border: 1px solid #444;
+                border-radius: 3px;
+                font-size: 24px;
+            }
+        """)
+    
+    # Get the layout and add thumbnail into grid
+    thumbnails_container = parent.thumbnails_container
+    layout = thumbnails_container.layout()
+
+    if layout and isinstance(layout, QGridLayout):
+        cols = getattr(parent, 'thumbnails_columns', getattr(thumbnails_container, 'columns', 4))
+        idx = layout.count()
+        row = idx // cols
+        col = idx % cols
+        layout.addWidget(thumbnail, row, col)
+    else:
+        # fallback: insert into any linear layout
+        try:
+            if layout:
+                layout.addWidget(thumbnail)
+        except Exception:
+            pass
+
+
+def reflow_thumbnails(parent):
+    """Reflow existing thumbnails according to current `thumbnails_columns`."""
+    if not hasattr(parent, 'thumbnails_container'):
+        return
+    container = parent.thumbnails_container
+    layout = container.layout()
+    if not isinstance(layout, QGridLayout):
+        return
+
+    # Collect existing thumbnail widgets
+    widgets = []
+    for i in reversed(range(layout.count())):
+        item = layout.takeAt(i)
+        w = item.widget()
+        if w:
+            widgets.append(w)
+
+    widgets.reverse()
+
+    cols = getattr(parent, 'thumbnails_columns', getattr(container, 'columns', 4))
+    for idx, w in enumerate(widgets):
+        row = idx // cols
+        col = idx % cols
+        layout.addWidget(w, row, col)
+
+
+def add_log_message(log_widget, message, error=False, warning=False):
+    """Add a timestamped message to the log widget."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    
+    if error:
+        colored_message = f"<span style='color: #ff6b6b;'>[{timestamp}] {message}</span>"
+    elif warning:
+        colored_message = f"<span style='color: #ffd93d;'>[{timestamp}] {message}</span>"
+    else:
+        colored_message = f"<span style='color: #ffffff;'>[{timestamp}] {message}</span>"
+    
+    # Append with HTML support
+    log_widget.append(colored_message)
+    
+    # Auto-scroll to bottom
+    scrollbar = log_widget.verticalScrollBar()
+    scrollbar.setValue(scrollbar.maximum())
+
+def create_middle_section():
+    """Create the middle section with left info panel and right models list."""
+    middle_widget = QWidget()
+    middle_widget.setStyleSheet("background-color: #1e1e1e;")
+    layout = QHBoxLayout(middle_widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    
+    # Left panel
+    left_panel, labels_dict, checkboxes_dict = create_left_panel()
+    layout.addWidget(left_panel, 1)
+    
+    # Right panel with models list
+    right_panel, models_list = create_right_panel()
+    layout.addWidget(right_panel, 1)
+    
+    return middle_widget, labels_dict, checkboxes_dict, models_list
+
+
+def create_left_panel():
+    """Create the left panel with checkboxes and info."""
+    left_widget = QFrame()
+    left_widget.setStyleSheet("background-color: #1e1e1e; border-right: 1px solid #333;")
+    layout = QVBoxLayout(left_widget)
+    layout.setContentsMargins(15, 15, 15, 15)
+    layout.setSpacing(10)
+    
+    # Checkboxes
+    checkbox_style = """
+        QCheckBox {
+            color: #ffffff;
+            font-size: 11px;
+        }
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+        }
+    """
+    
+    baixar_imagens = QCheckBox("Baixar imagens")
+    baixar_imagens.setChecked(True)
+    baixar_imagens.setStyleSheet(checkbox_style)
+    layout.addWidget(baixar_imagens)
+    
+    baixar_videos = QCheckBox("Baixar vídeos")
+    baixar_videos.setStyleSheet(checkbox_style)
+    layout.addWidget(baixar_videos)
+    
+    # Info labels
+    info_style = "color: #ffffff; font-size: 11px;"
+    
+    total_label = QLabel("Total: 0")
+    total_label.setStyleSheet(info_style)
+    layout.addWidget(total_label)
+    
+    pasta_label = QLabel("Pasta: -")
+    pasta_label.setStyleSheet(info_style)
+    layout.addWidget(pasta_label)
+    
+    status_label = QLabel("Status: Pronto")
+    status_label.setStyleSheet(info_style + " color: #90EE90;")
+    layout.addWidget(status_label)
+    
+    arquivo_label = QLabel("Arquivo: -")
+    arquivo_label.setStyleSheet(info_style)
+    layout.addWidget(arquivo_label)
+    
+    # Separator
+    separator = QFrame()
+    separator.setStyleSheet("background-color: #444;")
+    separator.setMinimumHeight(1)
+    layout.addWidget(separator)
+    
+    # Add stretch to push everything to top
+    layout.addStretch()
+    
+    # Create labels dictionary for external access
+    labels_dict = {
+        "total": total_label,
+        "pasta": pasta_label,
+        "status": status_label,
+        "arquivo": arquivo_label
+    }
+    
+    # Create checkboxes dictionary for external access
+    checkboxes_dict = {
+        "imagens": baixar_imagens,
+        "videos": baixar_videos
+    }
+    
+    return left_widget, labels_dict, checkboxes_dict
+
+
+def create_right_panel():
+    """Create the right panel with downloaded models list."""
+    right_widget = QFrame()
+    right_widget.setStyleSheet("background-color: #252525;")
+    layout = QVBoxLayout(right_widget)
+    layout.setContentsMargins(15, 15, 15, 15)
+    layout.setSpacing(8)
+    
+    # Title
+    title_label = QLabel("Modelos Baixados")
+    title_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")
+    layout.addWidget(title_label)
+    
+    # Models list
+    models_list = QListWidget()
+    models_list.setStyleSheet("""
+        QListWidget {
+            background-color: #2d2d2d;
+            color: #90EE90;
+            border: 1px solid #444;
+            border-radius: 3px;
+            font-size: 10px;
+        }
+        QListWidget::item:hover {
+            background-color: #3d3d3d;
+        }
+        QListWidget::item:selected {
+            background-color: #90EE90;
+            color: #000000;
+        }
+    """)
+    layout.addWidget(models_list)
+    
+    return right_widget, models_list
+
+
+def create_bottom_section():
+    """Create the bottom section with progress bar, log area and thumbnails."""
+    bottom_widget = QFrame()
+    bottom_widget.setStyleSheet("background-color: #1e1e1e;")
+    layout = QVBoxLayout(bottom_widget)
+    layout.setContentsMargins(15, 10, 15, 15)
+    layout.setSpacing(10)
+    
+    # Progress info
+    progress_label = QLabel("0 / 0 arquivos (0%)")
+    progress_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+    layout.addWidget(progress_label)
+    
+    # Progress bar
+    progress_bar = QProgressBar()
+    progress_bar.setStyleSheet("""
+        QProgressBar {
+            background-color: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 3px;
+            height: 20px;
+        }
+        QProgressBar::chunk {
+            background-color: #ffbf00;
+        }
+    """)
+    progress_bar.setValue(0)
+    progress_bar.setMinimumHeight(20)
+    layout.addWidget(progress_bar)
+    
+    # Log and thumbnails container
+    content_container = QWidget()
+    content_layout = QHBoxLayout(content_container)
+    content_layout.setContentsMargins(0, 0, 0, 0)
+    content_layout.setSpacing(10)
+    
+    # Log section
+    log_section = QWidget()
+    log_layout = QVBoxLayout(log_section)
+    log_layout.setContentsMargins(0, 0, 0, 0)
+    log_layout.setSpacing(5)
+    
+    # Log label
+    log_label = QLabel("Log de Atividades:")
+    log_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+    log_layout.addWidget(log_label)
+    
+    # Log widget
+    log_widget = QTextEdit()
+    log_widget.setReadOnly(True)
+    log_widget.setStyleSheet("""
+        QTextEdit {
+            background-color: #2d2d2d;
+            color: #ffffff;
+            border: 1px solid #444;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 10px;
+        }
+        QScrollBar:vertical {
+            background-color: #2d2d2d;
+            width: 8px;
+            border: none;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #444;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background-color: #555;
+        }
+    """)
+    log_widget.setMinimumHeight(150)
+    log_layout.addWidget(log_widget, 1)
+    content_layout.addWidget(log_section, 1)
+
+    # Thumbnails section
+    thumbnails_section = QWidget()
+    thumbnails_layout = QVBoxLayout(thumbnails_section)
+    thumbnails_layout.setContentsMargins(0, 0, 0, 0)
+    thumbnails_layout.setSpacing(5)
+
+    # Thumbnails label
+    thumb_label = QLabel("Downloads:")
+    thumb_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+    thumbnails_layout.addWidget(thumb_label)
+
+    # Scroll area for thumbnails
+    scroll_area = QScrollArea()
+    scroll_area.setStyleSheet("""
+        QScrollArea {
+            background-color: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 3px;
+        }
+        QScrollBar:vertical {
+            background-color: #2d2d2d;
+            width: 8px;
+            border: none;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #444;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background-color: #555;
+        }
+    """)
+    scroll_area.setWidgetResizable(True)
+
+    # Thumbnails container widget (grid)
+    thumbnails_container = QWidget()
+    thumbnails_container.setStyleSheet("background-color: #2d2d2d;")
+    thumbnails_grid = QGridLayout(thumbnails_container)
+    thumbnails_grid.setContentsMargins(8, 8, 8, 8)
+    thumbnails_grid.setSpacing(8)
+
+    # Default columns for the grid (can be overridden on the central widget)
+    thumbnails_container.columns = 4
+
+    scroll_area.setWidget(thumbnails_container)
+    thumbnails_layout.addWidget(scroll_area, 1)
+    content_layout.addWidget(thumbnails_section, 1)
+    
+    layout.addWidget(content_container, 1)
+    
+    return bottom_widget, progress_bar, progress_label, log_widget, thumbnails_container
+
