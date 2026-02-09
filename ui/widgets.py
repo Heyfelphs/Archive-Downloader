@@ -1,3 +1,25 @@
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
+# Janela para análise manual de imagens
+class ManualReviewDialog(QDialog):
+    def __init__(self, parent, url_list):
+        super().__init__(parent)
+        self.setWindowTitle("Análise Manual de Arquivos Falhados")
+        self.setMinimumSize(700, 400)
+        layout = QVBoxLayout(self)
+        label = QLabel("Selecione as URLs das imagens que deseja baixar manualmente:")
+        layout.addWidget(label)
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QListWidget.MultiSelection)
+        for url in url_list:
+            item = QListWidgetItem(url)
+            self.list_widget.addItem(item)
+        layout.addWidget(self.list_widget)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+    def get_selected(self):
+        return [item.text() for item in self.list_widget.selectedItems()]
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
     QCheckBox, QPushButton, QListWidget, QListWidgetItem, 
@@ -150,7 +172,9 @@ def build_ui(parent):
     central_widget.models_list = models_list
     central_widget.thumbnails_container = thumbnails_container
     # default number of columns for thumbnails grid
-    central_widget.thumbnails_columns = 4
+    central_widget.thumbnails_columns = 5
+    # limit how many thumbnails are kept in the grid
+    central_widget.thumbnails_limit = 5
     
     # Carregar modelos já baixados
     refresh_downloaded_models_list(central_widget)
@@ -347,6 +371,8 @@ def create_top_section(parent):
         parent.labels["status"].setText("Status: Baixando...")
         parent.progress_bar.setValue(0)
         
+        # Reset failed files list for manual analysis
+        parent.failed_files_for_analysis = []
         # Create download worker thread
         download_worker = DownloadWorker(url, download_images, download_videos, total_files)
         download_worker.progress_update.connect(lambda data: on_download_progress_update(parent, data))
@@ -391,6 +417,10 @@ def on_fetch_error(parent, error, checar_btn):
 
 
 def on_download_progress_update(parent, data):
+    # Salvar summary para uso posterior se análise manual estiver marcada
+    if data["type"] == "summary":
+        if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
+            parent.last_download_summary = data
     """Handle detailed download progress updates."""
     if data["type"] == "file_start":
         # Arquivo iniciou o download
@@ -451,11 +481,28 @@ def on_download_progress_update(parent, data):
         index = data['index']
         reason = data.get('reason', 'indisponível')
         add_log_message(parent.log_widget, f"⊘ Pulado [{index}] {reason}", warning=True)
+        # Se a checkbox de análise manual estiver marcada, guardar o arquivo pulado
+        if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
+            if not hasattr(parent, 'failed_files_for_analysis'):
+                parent.failed_files_for_analysis = []
+            parent.failed_files_for_analysis.append(f"Arquivo {index} (indisponível)")
     
     elif data["type"] == "file_error":
         # Erro ao baixar arquivo
         filename = data['filename']
         error = data.get('error', 'erro desconhecido')
+        # Increment progress bar and label even on error
+        current = parent.progress_bar.value() + 1
+        parent.progress_bar.setValue(current)
+        # Try to get total from label or progress bar
+        total = parent.progress_bar.maximum()
+        percent = int((current / total) * 100) if total else 0
+        parent.progress_label.setText(f"{current} / {total} arquivos ({percent}%)")
+        # Se a checkbox de análise manual estiver marcada, guardar o arquivo
+        if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
+            if not hasattr(parent, 'failed_files_for_analysis'):
+                parent.failed_files_for_analysis = []
+            parent.failed_files_for_analysis.append(filename)
         parent.labels["status"].setText(f"Status: Erro ao baixar {filename}")
         add_log_message(parent.log_widget, f"✗ Erro em {filename}: {error}", error=True)
     
@@ -497,11 +544,41 @@ def on_download_complete(parent, checar_btn, download_btn):
     """Handle successful download completion."""
     parent.labels["status"].setText("Status: Download concluído!")
     add_log_message(parent.log_widget, "✓ DOWNLOAD CONCLUÍDO!")
-    
+
+    # Se a opção de análise manual estiver marcada, exibir lista de arquivos falhados (nomes reais) e abrir janela de análise manual
+    if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
+        summary = getattr(parent, 'last_download_summary', None)
+        url_list = []
+        pasta = parent.labels["pasta"].text().split(": ")[1] if ": " in parent.labels["pasta"].text() else ""
+        # Reconstruir as URLs dos arquivos não baixados
+        if summary and 'failed_indices' in summary:
+            base_url = parent.link_input.text().strip()
+            for idx in summary['failed_indices']:
+                # Gera a URL do arquivo não baixado
+                url = f"{base_url}{idx}"
+                url_list.append(url)
+        else:
+            failed = getattr(parent, 'failed_files_for_analysis', [])
+            url_list = failed
+        if url_list:
+            add_log_message(parent.log_widget, "<b>Arquivos para análise manual:</b>")
+            for u in url_list:
+                add_log_message(parent.log_widget, f"<span style='color: #ffd93d;'>{u}</span>")
+            # Abrir janela de análise manual
+            dialog = ManualReviewDialog(parent, url_list)
+            if dialog.exec() == QDialog.Accepted:
+                selecionados = dialog.get_selected()
+                if selecionados:
+                    add_log_message(parent.log_widget, f"Selecionados para baixar manualmente: {', '.join(selecionados)}")
+                else:
+                    add_log_message(parent.log_widget, "Nenhum arquivo selecionado para baixar manualmente.")
+        else:
+            add_log_message(parent.log_widget, "Nenhum arquivo falhou para análise manual.")
+
     # Desabilitar botão de download após conclusão
     download_btn.setEnabled(False)
     checar_btn.setEnabled(True)
-    
+
     # Atualizar lista de modelos baixados
     refresh_downloaded_models_list(parent)
 
@@ -595,11 +672,29 @@ def add_thumbnail(parent, file_path):
     layout = thumbnails_container.layout()
 
     if layout and isinstance(layout, QGridLayout):
-        cols = getattr(parent, 'thumbnails_columns', getattr(thumbnails_container, 'columns', 4))
-        idx = layout.count()
-        row = idx // cols
-        col = idx % cols
-        layout.addWidget(thumbnail, row, col)
+        cols = getattr(parent, 'thumbnails_columns', getattr(thumbnails_container, 'columns', 5))
+        # Collect all current thumbnails
+        widgets = []
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            w = item.widget()
+            if w:
+                widgets.append(w)
+        # Insert new thumbnail at the beginning
+        widgets.insert(0, thumbnail)
+        # Limit to 5*rows (e.g., 5, 10, 15, ...), but keep only the most recent
+        max_thumbs = cols * 100  # Arbitrary large row count, or set a real limit if desired
+        widgets = widgets[:max_thumbs]
+        # Remove all from layout
+        while layout.count():
+            item = layout.takeAt(0)
+            if item and item.widget():
+                item.widget().setParent(None)
+        # Re-add in grid order
+        for idx, w in enumerate(widgets):
+            row = idx // cols
+            col = idx % cols
+            layout.addWidget(w, row, col)
     else:
         # fallback: insert into any linear layout
         try:
@@ -691,15 +786,20 @@ def create_left_panel():
             height: 16px;
         }
     """
-    
+
     baixar_imagens = QCheckBox("Baixar imagens")
     baixar_imagens.setChecked(True)
     baixar_imagens.setStyleSheet(checkbox_style)
     layout.addWidget(baixar_imagens)
-    
+
     baixar_videos = QCheckBox("Baixar vídeos")
     baixar_videos.setStyleSheet(checkbox_style)
     layout.addWidget(baixar_videos)
+
+    # Checkbox for manual analysis of failed files
+    analise_manual = QCheckBox("Análise manual dos arquivos que falharem")
+    analise_manual.setStyleSheet(checkbox_style)
+    layout.addWidget(analise_manual)
     
     # Info labels
     info_style = "color: #ffffff; font-size: 11px;"
@@ -740,9 +840,9 @@ def create_left_panel():
     # Create checkboxes dictionary for external access
     checkboxes_dict = {
         "imagens": baixar_imagens,
-        "videos": baixar_videos
+        "videos": baixar_videos,
+        "analise_manual": analise_manual
     }
-    
     return left_widget, labels_dict, checkboxes_dict
 
 
@@ -900,7 +1000,7 @@ def create_bottom_section():
     thumbnails_grid.setSpacing(8)
 
     # Default columns for the grid (can be overridden on the central widget)
-    thumbnails_container.columns = 4
+    thumbnails_container.columns = 5
 
     scroll_area.setWidget(thumbnails_container)
     thumbnails_layout.addWidget(scroll_area, 1)

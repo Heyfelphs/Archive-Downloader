@@ -57,10 +57,8 @@ class AppWindow(QMainWindow):
                 parent = thumbnails_container.parentWidget()
                 if parent:
                     available = parent.width()
-            # thumbnail + spacing heuristic
-            thumb_size = 80
-            spacing = 8
-            cols = max(1, available // (thumb_size + spacing))
+            # Fixed number of columns for thumbnails grid
+            cols = 5
             if getattr(central, 'thumbnails_columns', None) != cols:
                 central.thumbnails_columns = cols
                 reflow_thumbnails(central)
