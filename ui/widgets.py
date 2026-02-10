@@ -284,10 +284,22 @@ def build_ui(parent):
     thumbnails_container.setResizeMode(QListWidget.Adjust)
     thumbnails_container.setMovement(QListWidget.Static)
     thumbnails_container.setSpacing(10)
-    thumb_size = 120
+    thumb_size = 220  # Aumenta tamanho
     thumbnails_container.setIconSize(QSize(thumb_size, thumb_size))
-    thumbnails_container.setGridSize(QSize(thumb_size + 20, thumb_size + 35))
-    thumbnails_container.setStyleSheet("background-color: #181818; border: 1px solid #444; border-radius: 3px;")
+    thumbnails_container.setGridSize(QSize(thumb_size, thumb_size))
+    thumbnails_container.setStyleSheet("background-color: #181818; border: 1px solid #444; border-radius: 3px; QLIstWidget::item { margin: 0; padding: 0; }")
+    thumbnails_container.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    def set_fixed_thumb_grid():
+        try:
+            width = thumbnails_container.width() - thumbnails_container.frameWidth() * 2
+        except RuntimeError:
+            return
+        cols = 4
+        spacing = thumbnails_container.spacing()
+        thumb_size = int((width - (cols - 1) * spacing) / cols)
+        thumbnails_container.setIconSize(QSize(thumb_size, thumb_size))
+        thumbnails_container.setGridSize(QSize(thumb_size, thumb_size))
+    QTimer.singleShot(100, set_fixed_thumb_grid)
     preview_layout.addWidget(thumbnails_container, 1)
     center_layout.addWidget(preview_container, 3)
 
@@ -814,12 +826,35 @@ def add_thumbnail(parent, file_path):
     """Add a thumbnail to the thumbnails container."""
     # Adiciona thumbnail no QListWidget igual ao gui.py
     thumb_list = parent.thumb_list if hasattr(parent, 'thumb_list') else parent.thumbnails_container
-    thumb_size = 120
-    pix = QPixmap(file_path)
+    thumb_size = 220
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in ['.mp4', '.avi', '.mov', '.mkv']:
+        # Thumbnail para vídeo: usa QPixmap de um ícone de vídeo ou frame
+        try:
+            import cv2
+            cap = cv2.VideoCapture(file_path)
+            ret, frame = cap.read()
+            cap.release()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                from PySide6.QtGui import QImage
+                height, width, channel = frame.shape
+                bytes_per_line = channel * width
+                qimg = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
+                pix = QPixmap.fromImage(qimg)
+            else:
+                pix = QPixmap(thumb_size, thumb_size)
+                pix.fill(Qt.black)
+        except Exception:
+            pix = QPixmap(thumb_size, thumb_size)
+            pix.fill(Qt.black)
+    else:
+        pix = QPixmap(file_path)
     if pix.isNull():
-        return
+        pix = QPixmap(thumb_size, thumb_size)
+        pix.fill(Qt.darkGray)
     item = QListWidgetItem()
-    item.setSizeHint(QSize(thumb_size + 20, thumb_size + 35))
+    item.setSizeHint(QSize(thumb_size, thumb_size))
     side = min(pix.width(), pix.height())
     x = (pix.width() - side) // 2
     y = (pix.height() - side) // 2
