@@ -459,7 +459,13 @@ def create_top_section(parent):
             return
 
         # Pergunta a pasta de destino antes de iniciar o download
-        base_dir = getattr(parent, "download_root", Path("catalog") / "models")
+        from pathlib import Path
+        import os
+        # Tenta usar a pasta de imagens do usuário como padrão
+        pictures_dir = Path(os.path.expanduser(r"~")) / "Pictures"
+        if not pictures_dir.exists():
+            pictures_dir = Path.home()
+        base_dir = getattr(parent, "download_root", pictures_dir)
         parts = [p for p in url.split("/") if p]
         model_name = parts[-1] if parts else ""
         suggested_dir = base_dir / model_name if model_name else base_dir
