@@ -540,29 +540,22 @@ def on_download_complete(parent, checar_btn, download_btn):
         return
     parent._download_complete_called = True
     """Handle successful download completion."""
-    # Mensagem de confirmação com quantidade de arquivos baixados (usando resumo final)
-    summary = getattr(parent, 'last_download_summary', None)
-    arquivos = 0
-    if summary:
-        # Tenta pegar o valor correto do resumo
-        if "success" in summary:
-            arquivos = summary["success"]
-        elif "arquivos_baixados" in summary:
-            arquivos = summary["arquivos_baixados"]
+    # Mensagem de confirmação com quantidade de arquivos baixados (usa valor da barra de progresso)
+    arquivos = parent.progress_bar.value()
     msg = f"✓ DOWNLOAD CONCLUÍDO! Arquivos baixados: {arquivos}"
     parent.labels["status"].setText("Status: Download concluído!")
     add_log_message(parent.log_widget, msg)
     # Desabilitar botão de download ao concluir
     if hasattr(parent, 'download_btn'):
         parent.download_btn.setEnabled(False)
-    # Exibir mensagem modal de confirmação
+    # Exibir mensagem modal de confirmação (não modal para evitar congelamento)
     dlg = QMessageBox(parent)
     dlg.setWindowTitle("Download Concluído")
     dlg.setText(msg)
     dlg.setIcon(QMessageBox.Information)
     dlg.setStandardButtons(QMessageBox.Ok)
-    dlg.setModal(True)
-    dlg.exec()
+    dlg.setModal(False)
+    dlg.show()
     # (Removido: lógica de análise manual ao concluir download)
 
     # Desabilitar botão de download após conclusão
