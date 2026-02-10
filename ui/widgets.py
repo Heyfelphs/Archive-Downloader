@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QFrame, QProgressBar, QScrollArea, QTextEdit, QGridLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QPixmap, QIcon
 from datetime import datetime
 from config import APP_NAME, VERSION, APP_NAME_COLOR
@@ -421,10 +422,7 @@ def on_fetch_error(parent, error, checar_btn):
 
 
 def on_download_progress_update(parent, data):
-    # Salvar summary para uso posterior se análise manual estiver marcada
-    if data["type"] == "summary":
-        if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
-            parent.last_download_summary = data
+    # (Removido: salvar summary para análise manual)
     """Handle detailed download progress updates."""
     if data["type"] == "file_start":
         # Arquivo iniciou o download
@@ -485,11 +483,7 @@ def on_download_progress_update(parent, data):
         index = data['index']
         reason = data.get('reason', 'indisponível')
         add_log_message(parent.log_widget, f"⊘ Pulado [{index}] {reason}", warning=True)
-        # Se a checkbox de análise manual estiver marcada, guardar o arquivo pulado
-        if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
-            if not hasattr(parent, 'failed_files_for_analysis'):
-                parent.failed_files_for_analysis = []
-            parent.failed_files_for_analysis.append(f"Arquivo {index} (indisponível)")
+        # (Removido: guardar arquivo pulado para análise manual)
     
     elif data["type"] == "file_error":
         # Erro ao baixar arquivo
@@ -502,11 +496,7 @@ def on_download_progress_update(parent, data):
         total = parent.progress_bar.maximum()
         percent = int((current / total) * 100) if total else 0
         parent.progress_label.setText(f"{current} / {total} arquivos ({percent}%)")
-        # Se a checkbox de análise manual estiver marcada, guardar o arquivo
-        if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
-            if not hasattr(parent, 'failed_files_for_analysis'):
-                parent.failed_files_for_analysis = []
-            parent.failed_files_for_analysis.append(filename)
+        # (Removido: guardar arquivo com erro para análise manual)
         parent.labels["status"].setText(f"Status: Erro ao baixar {filename}")
         add_log_message(parent.log_widget, f"✗ Erro em {filename}: {error}", error=True)
     
@@ -550,9 +540,15 @@ def on_download_complete(parent, checar_btn, download_btn):
         return
     parent._download_complete_called = True
     """Handle successful download completion."""
-    # Mensagem de confirmação com quantidade de imagens e vídeos
+    # Mensagem de confirmação com quantidade de arquivos baixados (usando resumo final)
     summary = getattr(parent, 'last_download_summary', None)
-    arquivos = summary["arquivos_baixados"] if summary and "arquivos_baixados" in summary else 0
+    arquivos = 0
+    if summary:
+        # Tenta pegar o valor correto do resumo
+        if "success" in summary:
+            arquivos = summary["success"]
+        elif "arquivos_baixados" in summary:
+            arquivos = summary["arquivos_baixados"]
     msg = f"✓ DOWNLOAD CONCLUÍDO! Arquivos baixados: {arquivos}"
     parent.labels["status"].setText("Status: Download concluído!")
     add_log_message(parent.log_widget, msg)
@@ -567,36 +563,7 @@ def on_download_complete(parent, checar_btn, download_btn):
     dlg.setStandardButtons(QMessageBox.Ok)
     dlg.setModal(True)
     dlg.exec()
-
-    # Se a opção de análise manual estiver marcada, exibir lista de arquivos falhados (nomes reais) e abrir janela de análise manual
-    if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
-        summary = getattr(parent, 'last_download_summary', None)
-        url_list = []
-        pasta = parent.labels["pasta"].text().split(": ")[1] if ": " in parent.labels["pasta"].text() else ""
-        # Reconstruir as URLs dos arquivos não baixados
-        if summary and 'failed_indices' in summary:
-            base_url = parent.link_input.text().strip()
-            for idx in summary['failed_indices']:
-                # Gera a URL do arquivo não baixado
-                url = f"{base_url}{idx}"
-                url_list.append(url)
-        else:
-            failed = getattr(parent, 'failed_files_for_analysis', [])
-            url_list = failed
-        if url_list:
-            add_log_message(parent.log_widget, "<b>Arquivos para análise manual:</b>")
-            for u in url_list:
-                add_log_message(parent.log_widget, f"<span style='color: #ffd93d;'>{u}</span>")
-            # Abrir janela de análise manual
-            dialog = ManualReviewDialog(parent, url_list)
-            if dialog.exec() == QDialog.Accepted:
-                selecionados = dialog.get_selected()
-                if selecionados:
-                    add_log_message(parent.log_widget, f"Selecionados para baixar manualmente: {', '.join(selecionados)}")
-                else:
-                    add_log_message(parent.log_widget, "Nenhum arquivo selecionado para baixar manualmente.")
-        else:
-            add_log_message(parent.log_widget, "Nenhum arquivo falhou para análise manual.")
+    # (Removido: lógica de análise manual ao concluir download)
 
     # Desabilitar botão de download após conclusão
     download_btn.setEnabled(False)
@@ -665,18 +632,24 @@ def reflow_thumbnails(parent):
 
 
 def add_log_message(log_widget, message, error=False, warning=False):
-    """Add a timestamped message to the log widget."""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    
+    """Adiciona mensagem ao log de atividades sem horário e sem informações de thumbnail."""
+    # Define tag
     if error:
-        colored_message = f"<span style='color: #ff6b6b;'>[{timestamp}] {message}</span>"
+        tag = "<span style='color: #ff4d4d;'>[ERRO]</span>"
     elif warning:
-        colored_message = f"<span style='color: #ffd93d;'>[{timestamp}] {message}</span>"
+        tag = "<span style='color: #ffd93d;'>[AVISO]</span>"
     else:
-        colored_message = f"<span style='color: #ffffff;'>[{timestamp}] {message}</span>"
-    
-    # Append with HTML support
-    log_widget.append(colored_message)
+        tag = "<span style='color: #90EE90;'>[INFO]</span>"
+    # Remove mensagens de thumbnail
+    if (
+        message.startswith("Thumbnail encontrado:") or
+        message.startswith("Tentando thumbnail:") or
+        message.startswith("Thumbnail não encontrado") or
+        message.startswith("Procurando alternativa:") or
+        message.startswith("Alternativa encontrada:")
+    ):
+        return
+    log_widget.append(f"{tag} {message}")
     
     # Auto-scroll to bottom
     scrollbar = log_widget.verticalScrollBar()
@@ -730,10 +703,6 @@ def create_left_panel():
     baixar_videos.setStyleSheet(checkbox_style)
     layout.addWidget(baixar_videos)
 
-    # Checkbox for manual analysis of failed files
-    analise_manual = QCheckBox("Análise manual dos arquivos que falharem")
-    analise_manual.setStyleSheet(checkbox_style)
-    layout.addWidget(analise_manual)
     
     # Info labels
     info_style = "color: #ffffff; font-size: 11px;"
@@ -771,11 +740,10 @@ def create_left_panel():
         "arquivo": arquivo_label
     }
     
-    # Create checkboxes dictionary for external access
+    # Create checkboxes dictionary for external access (sem análise manual)
     checkboxes_dict = {
         "imagens": baixar_imagens,
-        "videos": baixar_videos,
-        "analise_manual": analise_manual
+        "videos": baixar_videos
     }
     return left_widget, labels_dict, checkboxes_dict
 
@@ -828,19 +796,24 @@ def create_bottom_section():
     thumb_list.setStyleSheet("background-color: #2d2d2d; border: 1px solid #444; border-radius: 3px;")
 
     # Função para ajustar gridSize para sempre 4 colunas
-    def adjust_thumb_grid():
-        width = thumb_list.viewport().width()
-        spacing = thumb_list.spacing()
-        cols = 4
-        # Calcular tamanho exato para 4 colunas, sem padding extra
+    # Como a janela é fixa e maximizada, calcula o tamanho das thumbnails uma vez
+    cols = 4
+    spacing = thumb_list.spacing()
+    frame = thumb_list.frameWidth() * 2
+    # Usa a largura do thumb_list após maximizar
+    def set_fixed_thumb_grid():
+        # Só executa se thumb_list ainda existir
+        try:
+            width = thumb_list.width() - frame
+        except RuntimeError:
+            return
+        width = thumb_list.width() - frame
         thumb_size = int((width - (cols - 1) * spacing) / cols)
         thumb_list.setIconSize(QSize(thumb_size, thumb_size))
         thumb_list.setGridSize(QSize(thumb_size, thumb_size))
+        thumb_list.setStyleSheet("QListWidget::item { margin: 0; padding: 0; }")
         thumb_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-    # Ajusta ao inicializar e ao redimensionar
-    thumb_list.resizeEvent = lambda event: (adjust_thumb_grid(), QListWidget.resizeEvent(thumb_list, event))
-    adjust_thumb_grid()
+    QTimer.singleShot(100, set_fixed_thumb_grid)
     """Create the bottom section with progress bar, log area and thumbnails."""
     bottom_widget = QFrame()
     bottom_widget.setStyleSheet("background-color: #1e1e1e;")

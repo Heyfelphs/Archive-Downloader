@@ -11,7 +11,10 @@ class AppWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Fapello Downloader")
-        self.setGeometry(100, 100, 1200, 700)
+        # Sempre maximizada e não redimensionável, mas pode minimizar
+        # Tamanho fixo (exemplo: 1200x800), não redimensionável, pode minimizar/fechar
+        self.setFixedSize(1200, 800)
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint | Qt.CustomizeWindowHint)
         
         # Apply dark theme
         self.setStyleSheet("""
@@ -37,9 +40,39 @@ class AppWindow(QMainWindow):
             }
         """)
         
+
         # Build UI
         central_widget = build_ui(self)
         self.setCentralWidget(central_widget)
+
+        # Carregar estado salvo (checkboxes e link)
+        try:
+            from config import load_ui_state
+            state = load_ui_state()
+            # Restaurar checkboxes
+            if hasattr(central_widget, 'checkboxes'):
+                for key, cb in central_widget.checkboxes.items():
+                    if key in state.get('checkboxes', {}):
+                        cb.setChecked(state['checkboxes'][key])
+            # Restaurar link
+            if hasattr(central_widget, 'link_input') and 'last_link' in state:
+                central_widget.link_input.setText(state['last_link'])
+        except Exception as e:
+            print(f"Erro ao restaurar estado da UI: {e}")
+
+    def closeEvent(self, event):
+        # Salvar estado das checkboxes e link
+        try:
+            from config import save_ui_state
+            central = self.centralWidget()
+            state = {
+                'checkboxes': {k: cb.isChecked() for k, cb in getattr(central, 'checkboxes', {}).items()},
+                'last_link': getattr(central, 'link_input', None).text() if hasattr(central, 'link_input') else ''
+            }
+            save_ui_state(state)
+        except Exception as e:
+            print(f"Erro ao salvar estado da UI: {e}")
+        super().closeEvent(event)
 
     def run(self):
         pass

@@ -1,3 +1,24 @@
+# Configuração de persistência de UI
+import json
+import os
+
+CONFIG_STATE_FILE = os.path.join(os.path.dirname(__file__), 'ui_state.json')
+
+def save_ui_state(state: dict):
+    try:
+        with open(CONFIG_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Erro ao salvar estado da UI: {e}")
+
+def load_ui_state() -> dict:
+    try:
+        if os.path.exists(CONFIG_STATE_FILE):
+            with open(CONFIG_STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Erro ao carregar estado da UI: {e}")
+    return {}
 # config.py
 
 APP_NAME = "Fapello.Downloader"
