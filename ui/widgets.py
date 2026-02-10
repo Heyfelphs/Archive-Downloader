@@ -175,14 +175,99 @@ def build_ui(parent):
     top_section, link_input = create_top_section(central_widget)
     main_layout.addWidget(top_section)
     
-    # Middle section with only left panel (expand thumbnails area)
-    middle_section, labels_dict, checkboxes_dict = create_middle_section_no_models()
-    main_layout.addWidget(middle_section, 1)
-    
-    # Bottom section with progress and log areas
-    bottom_section, progress_bar, progress_label, log_widget, thumbnails_container = create_bottom_section()
-    main_layout.addWidget(bottom_section, 1)
-    
+    # Painel central dividido: esquerda (opções/status/log) e direita (preview)
+    center_panel = QWidget()
+    center_layout = QHBoxLayout(center_panel)
+    center_layout.setContentsMargins(8, 0, 8, 8)
+    center_layout.setSpacing(12)
+
+    # Esquerda: painel de opções/status/log
+    left_panel, labels_dict, checkboxes_dict = create_left_panel()
+    left_panel.setMinimumWidth(260)
+    left_panel.setMaximumWidth(340)
+    # Log e progresso ficam juntos em um layout vertical
+    left_vbox = QVBoxLayout()
+    left_vbox.setContentsMargins(0, 0, 0, 0)
+    left_vbox.setSpacing(8)
+    left_vbox.addWidget(left_panel)
+
+    # Barra de progresso e label
+    progress_label = QLabel("0 % - 0 / 0 arquivos")
+    progress_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+    progress_bar = QProgressBar()
+    progress_bar.setStyleSheet("""
+        QProgressBar {
+            background-color: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 3px;
+            height: 20px;
+        }
+        QProgressBar::chunk {
+            background-color: #ffbf00;
+        }
+    """)
+    progress_bar.setValue(0)
+    progress_bar.setMinimumHeight(20)
+    left_vbox.addWidget(progress_label)
+    left_vbox.addWidget(progress_bar)
+
+    # Log de atividades
+    log_label = QLabel("log de atividades:")
+    log_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+    log_widget = QTextEdit()
+    log_widget.setReadOnly(True)
+    log_widget.setStyleSheet("""
+        QTextEdit {
+            background-color: #2d2d2d;
+            color: #ffffff;
+            border: 1px solid #444;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 10px;
+        }
+        QScrollBar:vertical {
+            background-color: #2d2d2d;
+            width: 8px;
+            border: none;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #444;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background-color: #555;
+        }
+    """)
+    log_widget.setMinimumHeight(150)
+    left_vbox.addWidget(log_label)
+    left_vbox.addWidget(log_widget, 1)
+
+    left_container = QWidget()
+    left_container.setLayout(left_vbox)
+    center_layout.addWidget(left_container, 1)
+
+    # Direita: painel de preview (thumbnails)
+    preview_container = QWidget()
+    preview_layout = QVBoxLayout(preview_container)
+    preview_layout.setContentsMargins(0, 0, 0, 0)
+    preview_layout.setSpacing(4)
+    preview_label = QLabel("preview de download")
+    preview_label.setStyleSheet("color: #ffffff; font-size: 12px;")
+    preview_layout.addWidget(preview_label)
+    thumbnails_container = QListWidget()
+    thumbnails_container.setViewMode(QListWidget.IconMode)
+    thumbnails_container.setResizeMode(QListWidget.Adjust)
+    thumbnails_container.setMovement(QListWidget.Static)
+    thumbnails_container.setSpacing(10)
+    thumb_size = 120
+    thumbnails_container.setIconSize(QSize(thumb_size, thumb_size))
+    thumbnails_container.setGridSize(QSize(thumb_size + 20, thumb_size + 35))
+    thumbnails_container.setStyleSheet("background-color: #181818; border: 1px solid #444; border-radius: 3px;")
+    preview_layout.addWidget(thumbnails_container, 1)
+    center_layout.addWidget(preview_container, 3)
+
+    main_layout.addWidget(center_panel, 1)
+
     # Store references for later access
     central_widget.link_input = link_input
     central_widget.labels = labels_dict
@@ -190,8 +275,6 @@ def build_ui(parent):
     central_widget.progress_bar = progress_bar
     central_widget.progress_label = progress_label
     central_widget.log_widget = log_widget
-    # Removido: models_list
-
     central_widget.thumbnails_container = thumbnails_container
     central_widget.thumb_list = thumbnails_container
     # default number of columns for thumbnails grid (fixo em 4)
@@ -202,10 +285,6 @@ def build_ui(parent):
     central_widget.download_root = Path("catalog") / "models"
     if "destino" in labels_dict:
         labels_dict["destino"].setText(f"Destino: {central_widget.download_root}")
-    
-    # Carregar modelos já baixados
-    # (A linha abaixo foi corrigida para não ter indentação errada)
-    # central_widget.thumbnails_columns = 4  # já definido acima
     return central_widget
 
 
@@ -613,10 +692,7 @@ def on_download_progress_update(parent, data):
         
         parent.progress_label.setText(summary_msg)
         
-        # Log message with summary
-        add_log_message(parent.log_widget, f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        add_log_message(parent.log_widget, f"✓ RESUMO: {success} sucesso(s) | {failed} falha(s) | {skipped} indisponível(is)")
-        add_log_message(parent.log_widget, f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        # (Removido: log de resumo no final do download)
     
     elif data["type"] == "status":
         # Atualizar status
@@ -636,7 +712,7 @@ def on_download_complete(parent, checar_btn, download_btn):
     arquivos = parent.progress_bar.value()
     msg = f"✓ DOWNLOAD CONCLUÍDO! Arquivos baixados: {arquivos}"
     parent.labels["status"].setText("Status: Download concluído!")
-    add_log_message(parent.log_widget, msg)
+    # (Removido: log de conclusão no final do download)
     # Desabilitar botão de download ao concluir
     if hasattr(parent, 'download_btn'):
         parent.download_btn.setEnabled(False)
