@@ -1,5 +1,6 @@
 import threading
 import queue
+import os
 # core/downloader_progress.py
 
 from multiprocessing.pool import ThreadPool
@@ -88,7 +89,7 @@ def download_worker_with_progress(base_url: str, target_dir: str, index: int, pr
             })
 
 
-def download_orchestrator_with_progress(url: str, workers: int, progress_callback=None):
+def download_orchestrator_with_progress(url: str, workers: int, progress_callback=None, target_dir=None):
     # Contador total de arquivos baixados
     download_count = 0
 
@@ -109,7 +110,9 @@ def download_orchestrator_with_progress(url: str, workers: int, progress_callbac
     }
     
     model_name = url.split("/")[3]
-    target_dir = join("catalog", "models", model_name)
+    if target_dir is None:
+        target_dir = join("catalog", "models", model_name)
+    target_dir = os.fspath(target_dir)
 
     try:
         if progress_callback:

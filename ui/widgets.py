@@ -25,11 +25,11 @@ class ManualReviewDialog(QDialog):
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
     QCheckBox, QPushButton, QListWidget, QListWidgetItem, 
-    QFrame, QProgressBar, QScrollArea, QTextEdit, QGridLayout, QSizePolicy
+    QFrame, QProgressBar, QScrollArea, QTextEdit, QGridLayout, QSizePolicy, QFileDialog
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QFont, QPixmap, QIcon
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices
 from datetime import datetime
 from config import APP_NAME, VERSION, APP_NAME_COLOR
 from core.fapello_client import get_total_files
@@ -73,12 +73,13 @@ class DownloadWorker(QThread):
     finished = Signal()
     error = Signal(str)
     
-    def __init__(self, url: str, download_images: bool, download_videos: bool, total_files: int):
+    def __init__(self, url: str, download_images: bool, download_videos: bool, total_files: int, target_dir: Path):
         super().__init__()
         self.url = url
         self.download_images = download_images
         self.download_videos = download_videos
         self.total_files = total_files
+        self.target_dir = target_dir
     
     def progress_callback(self, data):
         """Callback for progress updates from downloader."""
@@ -134,7 +135,8 @@ class DownloadWorker(QThread):
             download_orchestrator_with_progress(
                 self.url, 
                 workers=4,
-                progress_callback=self.progress_callback
+                progress_callback=self.progress_callback,
+                target_dir=self.target_dir
             )
             self.finished.emit()
         except Exception as e:
@@ -179,6 +181,10 @@ def build_ui(parent):
     central_widget.thumbnails_columns = 4
     # limit how many thumbnails are kept in the grid
     central_widget.thumbnails_limit = 5
+    # Default download root
+    central_widget.download_root = Path("catalog") / "models"
+    if "destino" in labels_dict:
+        labels_dict["destino"].setText(f"Destino: {central_widget.download_root}")
     
     # Carregar modelos já baixados
     # (A linha abaixo foi corrigida para não ter indentação errada)
@@ -269,12 +275,14 @@ def create_top_section(parent):
         }}
     """)
     layout.addWidget(download_btn)
+
     
-    # Catálogo button
-    catalogo_btn = QPushButton("Catálogo")
-    catalogo_btn.setMinimumWidth(80)
-    catalogo_btn.setMinimumHeight(32)
-    catalogo_btn.setStyleSheet("""
+    # Abrir pasta button
+    open_folder_btn = QPushButton("Abrir pasta")
+    open_folder_btn.setMinimumWidth(90)
+    open_folder_btn.setMinimumHeight(32)
+    open_folder_btn.setEnabled(False)
+    open_folder_btn.setStyleSheet("""
         QPushButton {
             background-color: #2d2d2d;
             color: #ffffff;
@@ -282,18 +290,24 @@ def create_top_section(parent):
             border-radius: 3px;
             font-weight: bold;
         }
-        QPushButton:hover {
+        QPushButton:hover:!disabled {
             background-color: #3d3d3d;
         }
         QPushButton:pressed {
             background-color: #444;
         }
+        QPushButton:disabled {
+            color: #666;
+            background-color: #1a1a1a;
+            border: 1px solid #333;
+        }
     """)
-    layout.addWidget(catalogo_btn)
+    layout.addWidget(open_folder_btn)
     
     # Store buttons in parent for external access
     parent.checar_btn = checar_btn
     parent.download_btn = download_btn
+    parent.open_folder_btn = open_folder_btn
     
     # Connect link input to enable/disable checar button
     def on_link_changed():
@@ -303,6 +317,9 @@ def create_top_section(parent):
         if has_text:
             download_btn.setVisible(True)
             download_btn.setEnabled(False)
+        if hasattr(parent, "open_folder_btn"):
+            parent.open_folder_btn.setEnabled(False)
+        parent._download_complete_called = False
     
     link_input.textChanged.connect(on_link_changed)
     
@@ -344,6 +361,39 @@ def create_top_section(parent):
         if not download_images and not download_videos:
             parent.labels["status"].setText("Status: Selecione imagens ou vídeos!")
             return
+
+        # Pergunta a pasta de destino antes de iniciar o download
+        base_dir = getattr(parent, "download_root", Path("catalog") / "models")
+        parts = [p for p in url.split("/") if p]
+        model_name = parts[-1] if parts else ""
+        suggested_dir = base_dir / model_name if model_name else base_dir
+        folder = QFileDialog.getExistingDirectory(parent, "Escolha a pasta para salvar o download", str(suggested_dir))
+        if not folder:
+            parent.labels["status"].setText("Status: Download cancelado pelo usuário.")
+            checar_btn.setEnabled(True)
+            download_btn.setEnabled(True)
+            return
+        # Cria subpasta com nome da modelo
+        parts = [p for p in url.split("/") if p]
+        model_name = parts[-1] if parts else "modelo"
+        target_dir = Path(folder) / model_name
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            test_file = target_dir / "__fapello_test_perm.txt"
+            with open(test_file, "w") as f:
+                f.write("test")
+            test_file.unlink()
+        except Exception as e:
+            QMessageBox.critical(parent, "Permissão negada", f"Não foi possível salvar arquivos na pasta selecionada.\n\nErro: {e}\n\nEscolha uma pasta diferente.")
+            parent.labels["status"].setText("Status: Sem permissão na pasta escolhida.")
+            checar_btn.setEnabled(True)
+            download_btn.setEnabled(True)
+            return
+        parent.current_download_dir = target_dir
+        parent.last_download_dir = target_dir
+        if hasattr(parent, "labels") and "destino" in parent.labels:
+            parent.labels["destino"].setText(f"Destino: {target_dir}")
+        add_log_message(parent.log_widget, f"Destino escolhido: {target_dir}")
         
         # Get total files from label
         total_text = parent.labels["total"].text()
@@ -359,6 +409,7 @@ def create_top_section(parent):
         if download_videos:
             download_types.append("vídeos")
         add_log_message(parent.log_widget, f"⬇️  Iniciando download de {', '.join(download_types)} ({total_files} arquivo(s))")
+        add_log_message(parent.log_widget, f"Destino: {target_dir}")
         
         # Limpar thumbnails anteriores
         flow_widget = parent.thumbnails_container
@@ -373,13 +424,16 @@ def create_top_section(parent):
         # Disable download button during download
         download_btn.setEnabled(False)
         checar_btn.setEnabled(False)
+        if hasattr(parent, "open_folder_btn"):
+            parent.open_folder_btn.setEnabled(False)
+        parent._download_complete_called = False
         parent.labels["status"].setText("Status: Baixando...")
         parent.progress_bar.setValue(0)
         
         # Reset failed files list for manual analysis
         parent.failed_files_for_analysis = []
         # Create download worker thread
-        download_worker = DownloadWorker(url, download_images, download_videos, total_files)
+        download_worker = DownloadWorker(url, download_images, download_videos, total_files, target_dir)
         download_worker.progress_update.connect(lambda data: on_download_progress_update(parent, data))
         download_worker.finished.connect(lambda: on_download_complete(parent, checar_btn, download_btn))
         download_worker.error.connect(lambda err: on_download_error(parent, err, checar_btn, download_btn))
@@ -387,6 +441,26 @@ def create_top_section(parent):
         parent.download_worker = download_worker  # Store reference
     
     download_btn.clicked.connect(on_download_clicked)
+
+    def on_choose_folder_clicked():
+        base_dir = getattr(parent, "download_root", Path("catalog") / "models")
+        folder = QFileDialog.getExistingDirectory(parent, "Escolher pasta de download", str(base_dir))
+        if folder:
+            parent.download_root = Path(folder)
+            if hasattr(parent, "labels") and "destino" in parent.labels:
+                parent.labels["destino"].setText(f"Destino: {folder}")
+            add_log_message(parent.log_widget, f"Pasta de download selecionada: {folder}")
+
+    # (Removido: botão de escolher pasta)
+
+    def on_open_folder_clicked():
+        target_dir = getattr(parent, "last_download_dir", None)
+        if not target_dir:
+            add_log_message(parent.log_widget, "Nenhuma pasta para abrir ainda.", warning=True)
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_dir)))
+
+    open_folder_btn.clicked.connect(on_open_folder_clicked)
     
     return top_widget, link_input
 
@@ -402,6 +476,8 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
     # Log message
     add_log_message(parent.log_widget, f"✓ Busca concluída: {data['total']} arquivo(s) encontrado(s)")
     add_log_message(parent.log_widget, f"Pasta definida: {data['pasta']}")
+    base_dir = getattr(parent, "download_root", Path("catalog") / "models")
+    add_log_message(parent.log_widget, f"Destino: {base_dir}")
     
     # Enable download button and show it
     download_btn.setVisible(True)
@@ -452,10 +528,9 @@ def on_download_progress_update(parent, data):
         
         # Tentar adicionar thumbnail
         # Construir caminho do arquivo baseado no padrão catalog/models/[model_name]/[filename]
-        pasta = parent.labels["pasta"].text().split(": ")[1] if ": " in parent.labels["pasta"].text() else ""
-        if pasta:
-            model_path = Path("catalog") / "models" / pasta
-            file_path = model_path / filename
+        model_path = getattr(parent, "current_download_dir", None)
+        if model_path:
+            file_path = Path(model_path) / filename
             add_log_message(parent.log_widget, f"Tentando thumbnail: {file_path}")
             if file_path.exists():
                 add_log_message(parent.log_widget, f"Thumbnail encontrado: {file_path}")
@@ -464,9 +539,9 @@ def on_download_progress_update(parent, data):
                 add_log_message(parent.log_widget, f"Thumbnail não encontrado no caminho exato: {file_path}", warning=True)
                 # procura por arquivos com mesma extensão no diretório do modelo
                 try:
-                    if model_path.exists():
+                    if Path(model_path).exists():
                         found = False
-                        for p in model_path.rglob(f"*{Path(filename).suffix}"):
+                        for p in Path(model_path).rglob(f"*{Path(filename).suffix}"):
                             add_log_message(parent.log_widget, f"Procurando alternativa: {p}")
                             if filename.split("_")[-1] in p.name or str(filename) == p.name:
                                 add_log_message(parent.log_widget, f"Alternativa encontrada: {p}")
@@ -561,6 +636,8 @@ def on_download_complete(parent, checar_btn, download_btn):
     # Desabilitar botão de download após conclusão
     download_btn.setEnabled(False)
     checar_btn.setEnabled(True)
+    if hasattr(parent, "open_folder_btn"):
+        parent.open_folder_btn.setEnabled(True)
 
     # Atualizar lista de modelos baixados
     refresh_downloaded_models_list(parent)
@@ -572,11 +649,13 @@ def on_download_error(parent, error, checar_btn, download_btn):
     add_log_message(parent.log_widget, f"✗ ERRO: {error}", error=True)
     download_btn.setEnabled(False)
     checar_btn.setEnabled(True)
+    if hasattr(parent, "open_folder_btn"):
+        parent.open_folder_btn.setEnabled(False)
 
 
-def get_downloaded_models():
+def get_downloaded_models(base_path=None):
     """Get list of downloaded models from catalog/models directory."""
-    catalog_path = Path("catalog") / "models"
+    catalog_path = Path(base_path) if base_path else (Path("catalog") / "models")
     if not catalog_path.exists():
         return []
     
@@ -591,7 +670,8 @@ def refresh_downloaded_models_list(parent):
     """Refresh the downloaded models list widget."""
     if hasattr(parent, 'models_list'):
         parent.models_list.clear()
-        models = get_downloaded_models()
+        base_dir = getattr(parent, "download_root", None)
+        models = get_downloaded_models(base_dir)
         for model in models:
             item = QListWidgetItem(f"✓ {model}")
             parent.models_list.addItem(item)
@@ -711,6 +791,10 @@ def create_left_panel():
     pasta_label = QLabel("Pasta: -")
     pasta_label.setStyleSheet(info_style)
     layout.addWidget(pasta_label)
+
+    destino_label = QLabel("Destino: -")
+    destino_label.setStyleSheet(info_style)
+    layout.addWidget(destino_label)
     
     status_label = QLabel("Status: Pronto")
     status_label.setStyleSheet(info_style + " color: #90EE90;")
@@ -733,6 +817,7 @@ def create_left_panel():
     labels_dict = {
         "total": total_label,
         "pasta": pasta_label,
+        "destino": destino_label,
         "status": status_label,
         "arquivo": arquivo_label
     }
