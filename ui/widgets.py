@@ -626,8 +626,12 @@ def reflow_thumbnails(parent):
 
 def add_log_message(log_widget, message, error=False, warning=False):
     """Adiciona mensagem ao log de atividades sem horário e sem informações de thumbnail."""
-    # Define tag
-    if error:
+    # Tag customizada para imagens baixadas e início de download
+    if message.startswith("✓ Concluído "):
+        tag = "<span style='color: #00bfff;'>[IMG]</span>"
+    elif message.startswith("→ Baixando "):
+        tag = "<span style='color: #ffd93d;'>[AVISO]</span>"
+    elif error:
         tag = "<span style='color: #ff4d4d;'>[ERRO]</span>"
     elif warning:
         tag = "<span style='color: #ffd93d;'>[AVISO]</span>"
