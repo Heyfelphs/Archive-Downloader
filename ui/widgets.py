@@ -826,18 +826,7 @@ def reflow_thumbnails(parent):
 
 
 def add_log_message(log_widget, message, error=False, warning=False):
-    """Adiciona mensagem ao log de atividades sem horário e sem informações de thumbnail."""
-    # Tag customizada para imagens baixadas e início de download
-    if message.startswith("✓ Concluído "):
-        tag = "<span style='color: #00bfff;'>[IMG]</span>"
-    elif message.startswith("→ Baixando "):
-        tag = "<span style='color: #ffd93d;'>[AVISO]</span>"
-    elif error:
-        tag = "<span style='color: #ff4d4d;'>[ERRO]</span>"
-    elif warning:
-        tag = "<span style='color: #ffd93d;'>[AVISO]</span>"
-    else:
-        tag = "<span style='color: #90EE90;'>[INFO]</span>"
+    """Adiciona mensagem ao log de atividades com tags e cor de linha para tipo de conteúdo."""
     # Remove mensagens de thumbnail
     if (
         message.startswith("Thumbnail encontrado:") or
@@ -847,8 +836,30 @@ def add_log_message(log_widget, message, error=False, warning=False):
         message.startswith("Alternativa encontrada:")
     ):
         return
-    log_widget.append(f"{tag} {message}")
-    
+
+    # Detecta imagem/video
+    is_img = "imagem" in message or "jpg" in message or "[IMG]" in message or (message.startswith("✓ Concluído ") and ".jpg" in message)
+    is_video = "video" in message or "mp4" in message or "[VIDEO]" in message or (message.startswith("✓ Concluído ") and ".mp4" in message)
+
+    if is_img:
+        tag = "[IMG]"
+        color = "#0074D9"  # azul
+    elif is_video:
+        tag = "[VIDEO]"
+        color = "#2ECC40"  # verde
+    elif error:
+        tag = "[ERRO]"
+        color = "#FF4136"  # vermelho
+    elif warning:
+        tag = "[AVISO]"
+        color = "#FFDC00"  # amarelo
+    else:
+        tag = "[INFO]"
+        color = "#AAAAAA"  # cinza
+
+    # Linha inteira colorida
+    log_widget.append(f"<span style='color:{color};'><b>{tag}</b> {message}</span>")
+
     # Auto-scroll to bottom
     scrollbar = log_widget.verticalScrollBar()
     scrollbar.setValue(scrollbar.maximum())

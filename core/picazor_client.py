@@ -21,30 +21,29 @@ class PicazorClient:
     # Descobre quantos posts realmente existem
     # ---------------------------------------------------------
     def get_total_files(self, base_url: str) -> int:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        max_workers = min(16, self.max_check)  # Limite de threads
+        consecutive_404 = 0
         found = []
-
-        def check_post(i):
+        for i in range(1, self.max_check + 1):
             url = f"{base_url}/{i}"
             print(f"[Picazor] Checking {url}")
             response = self.scraper.get(url)
+            if response.status_code == 404:
+                consecutive_404 += 1
+                print(f"[Picazor] 404 at index {i} (consecutive: {consecutive_404})")
+                if consecutive_404 >= 10:
+                    print(f"[Picazor] Stopping: 10 consecutive 404s at index {i}")
+                    break
+                continue
+            else:
+                consecutive_404 = 0
             if response.status_code != 200:
                 print(f"[Picazor] Stop: status {response.status_code} at index {i}")
-                return None
+                continue
             soup = BeautifulSoup(response.text, "html.parser")
             if not self._has_media(soup):
                 print(f"[Picazor] Stop: no media at index {i}")
-                return None
-            return i
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(check_post, i) for i in range(1, self.max_check + 1)]
-            for future in as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    found.append(result)
-
+                continue
+            found.append(i)
         print(f"[Picazor] Total files found: {len(found)}")
         return len(found)
 
