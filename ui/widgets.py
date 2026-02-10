@@ -48,7 +48,7 @@ from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices
 from datetime import datetime
 from config import APP_NAME, VERSION, APP_NAME_COLOR
-from core.fapello_client import get_total_files
+from core.fapello_client import get_total_files as get_fapello_total_files
 from core.downloader_progress import download_orchestrator_with_progress
 from multiprocessing import Queue
 import os
@@ -69,12 +69,20 @@ class FetchWorker(QThread):
             if not self.url.strip():
                 self.error.emit("URL vazia!")
                 return
-            
-            total_files = get_total_files(self.url)
+
+            if "picazor.com" in self.url:
+                print("[FetchWorker] Detected Picazor link. Starting analysis...")
+                from core.picazor_client import PicazorClient
+                client = PicazorClient()
+                total_files = client.get_total_files(self.url)
+                print(f"[FetchWorker] Media found: {total_files} files")
+            else:
+                total_files = get_fapello_total_files(self.url)
+
             # Extract model name robustly (handle trailing slash)
             parts = [p for p in self.url.split("/") if p]
             pasta = parts[-1] if parts else ""
-            
+
             self.finished.emit({
                 "total": total_files,
                 "pasta": pasta
@@ -148,12 +156,21 @@ class DownloadWorker(QThread):
     
     def run(self):
         try:
-            download_orchestrator_with_progress(
-                self.url, 
-                workers=4,
-                progress_callback=self.progress_callback,
-                target_dir=self.target_dir
-            )
+            if "picazor.com" in self.url:
+                from core.picazor_downloader import picazor_download_orchestrator
+                picazor_download_orchestrator(
+                    self.url,
+                    str(self.target_dir),
+                    workers=4,
+                    progress_callback=self.progress_callback
+                )
+            else:
+                download_orchestrator_with_progress(
+                    self.url, 
+                    workers=4,
+                    progress_callback=self.progress_callback,
+                    target_dir=self.target_dir
+                )
             self.finished.emit()
         except Exception as e:
             self.error.emit(f"Erro no download: {str(e)}")
@@ -430,6 +447,8 @@ def create_top_section(parent):
         parent.thumbnails_container.columns = 4
         if not url:
             parent.labels["status"].setText("Status: URL vazia!")
+            QMessageBox.warning(parent, "Link inválido", "Por favor, insira um link válido para continuar.")
+            link_input.setFocus()
             return
 
         # Log message
@@ -580,17 +599,21 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
     parent.labels["status"].setText("Status: Pronto")
     parent.progress_bar.setMaximum(data['total'])
     parent.progress_label.setText(f"0 / {data['total']} arquivos (0%)")
-    
+
+    if data['total'] == 0:
+        QMessageBox.warning(parent, "Link inválido ou não validado", "O link informado não é válido ou não pôde ser validado. Por favor, insira um link válido.")
+        checar_btn.setEnabled(True)
+        return
+
     # Log message
     add_log_message(parent.log_widget, f"✓ Busca concluída: {data['total']} arquivo(s) encontrado(s)")
     add_log_message(parent.log_widget, f"Pasta definida: {data['pasta']}")
     base_dir = getattr(parent, "download_root", Path("catalog") / "models")
     add_log_message(parent.log_widget, f"Destino: {base_dir}")
-    
+
     # Enable download button and show it
     download_btn.setVisible(True)
     download_btn.setEnabled(True)
-    
     # Keep checar button disabled until link changes
 
 
