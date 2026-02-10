@@ -655,47 +655,7 @@ def add_thumbnail(parent, file_path):
     item.setIcon(QIcon(pix))
     item.setData(Qt.UserRole, file_path)
     thumb_list.insertItem(0, item)
-    if layout:
-        for i in range(layout.count()):
-            item = layout.itemAt(i)
-            w = item.widget()
-            if w and hasattr(w, 'file_path') and getattr(w, 'file_path', None) == file_path:
-                return  # Já existe, não adiciona de novo
 
-    # Marcar o QLabel com o caminho do arquivo para evitar duplicação
-    thumbnail.file_path = file_path
-
-    if layout and isinstance(layout, QGridLayout):
-        cols = getattr(parent, 'thumbnails_columns', getattr(thumbnails_container, 'columns', 5))
-        # Collect all current thumbnails
-        widgets = []
-        for i in range(layout.count()):
-            item = layout.itemAt(i)
-            w = item.widget()
-            if w:
-                widgets.append(w)
-        # Insert new thumbnail at the beginning
-        widgets.insert(0, thumbnail)
-        # Limit to 5*rows (e.g., 5, 10, 15, ...), but keep only the most recent
-        max_thumbs = cols * 100  # Arbitrary large row count, or set a real limit if desired
-        widgets = widgets[:max_thumbs]
-        # Remove all from layout
-        while layout.count():
-            item = layout.takeAt(0)
-            if item and item.widget():
-                item.widget().setParent(None)
-        # Re-add in grid order
-        for idx, w in enumerate(widgets):
-            row = idx // cols
-            col = idx % cols
-            layout.addWidget(w, row, col)
-    else:
-        # fallback: insert into any linear layout
-        try:
-            if layout:
-                layout.addWidget(thumbnail)
-        except Exception:
-            pass
 
 
 def reflow_thumbnails(parent):
@@ -857,18 +817,30 @@ def create_right_panel():
 
 
 def create_bottom_section():
-        # Função para ajustar gridSize para sempre 4 colunas
-        def adjust_thumb_grid():
-            width = thumb_list.viewport().width()
-            spacing = thumb_list.spacing()
-            cols = 4
-            thumb_size = max(80, int((width - (cols - 1) * spacing) / cols))
-            thumb_list.setIconSize(QSize(thumb_size, thumb_size))
-            thumb_list.setGridSize(QSize(thumb_size + 20, thumb_size + 35))
+    thumb_list = QListWidget()
+    thumb_list.setViewMode(QListWidget.IconMode)
+    thumb_list.setResizeMode(QListWidget.Adjust)
+    thumb_list.setMovement(QListWidget.Static)
+    thumb_list.setSpacing(10)
+    thumb_size = 120
+    thumb_list.setIconSize(QSize(thumb_size, thumb_size))
+    thumb_list.setGridSize(QSize(thumb_size + 20, thumb_size + 35))
+    thumb_list.setStyleSheet("background-color: #2d2d2d; border: 1px solid #444; border-radius: 3px;")
 
-        # Ajusta ao inicializar e ao redimensionar
-        thumb_list.resizeEvent = lambda event: (adjust_thumb_grid(), QListWidget.resizeEvent(thumb_list, event))
-        adjust_thumb_grid()
+    # Função para ajustar gridSize para sempre 4 colunas
+    def adjust_thumb_grid():
+        width = thumb_list.viewport().width()
+        spacing = thumb_list.spacing()
+        cols = 4
+        # Calcular tamanho exato para 4 colunas, sem padding extra
+        thumb_size = int((width - (cols - 1) * spacing) / cols)
+        thumb_list.setIconSize(QSize(thumb_size, thumb_size))
+        thumb_list.setGridSize(QSize(thumb_size, thumb_size))
+        thumb_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    # Ajusta ao inicializar e ao redimensionar
+    thumb_list.resizeEvent = lambda event: (adjust_thumb_grid(), QListWidget.resizeEvent(thumb_list, event))
+    adjust_thumb_grid()
     """Create the bottom section with progress bar, log area and thumbnails."""
     bottom_widget = QFrame()
     bottom_widget.setStyleSheet("background-color: #1e1e1e;")
