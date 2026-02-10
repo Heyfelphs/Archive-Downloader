@@ -24,12 +24,21 @@ def picazor_download_orchestrator(url: str, target_dir: str, workers: int = 6, p
 
     for idx, post_url in enumerate(post_urls, 1):
         media_list = client.get_media_info(post_url)
+        # Determina o número real da página
+        if valid_indices is not None:
+            page_number = valid_indices[idx-1]
+        else:
+            # Extrai o número da URL
+            try:
+                page_number = int(post_url.rstrip('/').split('/')[-1])
+            except Exception:
+                page_number = idx
         for m_idx, (file_url, media_type) in enumerate(media_list):
             # Corrige URLs relativas para absolutas
             if file_url and file_url.startswith("/"):
                 file_url = "https://picazor.com" + file_url
             ext = ".mp4" if media_type == "video" else ".jpg"
-            filename = f"{model_name}_{idx}_{m_idx+1}{ext}"
+            filename = f"{model_name}_{page_number}{ext}"
             path = join(target_dir, filename)
             try:
                 with open(path, "wb") as f:
@@ -38,7 +47,7 @@ def picazor_download_orchestrator(url: str, target_dir: str, workers: int = 6, p
                     progress_callback({
                         "type": "file_complete",
                         "filename": filename,
-                        "index": idx,
+                        "index": page_number,
                         "success": idx
                     })
             except Exception as e:
@@ -47,7 +56,7 @@ def picazor_download_orchestrator(url: str, target_dir: str, workers: int = 6, p
                         "type": "file_error",
                         "filename": filename,
                         "error": str(e),
-                        "index": idx
+                        "index": page_number
                     })
     if progress_callback:
         progress_callback({
