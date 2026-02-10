@@ -1,4 +1,6 @@
+from PySide6.QtWidgets import QMessageBox
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
+from PySide6.QtCore import QSize
 # Janela para análise manual de imagens
 class ManualReviewDialog(QDialog):
     def __init__(self, parent, url_list):
@@ -26,7 +28,7 @@ from PySide6.QtWidgets import (
     QFrame, QProgressBar, QScrollArea, QTextEdit, QGridLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont, QPixmap
+from PySide6.QtGui import QFont, QPixmap, QIcon
 from datetime import datetime
 from config import APP_NAME, VERSION, APP_NAME_COLOR
 from core.fapello_client import get_total_files
@@ -171,14 +173,15 @@ def build_ui(parent):
     central_widget.log_widget = log_widget
     central_widget.models_list = models_list
     central_widget.thumbnails_container = thumbnails_container
-    # default number of columns for thumbnails grid
-    central_widget.thumbnails_columns = 5
+    central_widget.thumb_list = thumbnails_container
+    # default number of columns for thumbnails grid (fixo em 4)
+    central_widget.thumbnails_columns = 4
     # limit how many thumbnails are kept in the grid
     central_widget.thumbnails_limit = 5
     
     # Carregar modelos já baixados
-    refresh_downloaded_models_list(central_widget)
-    
+    # (A linha abaixo foi corrigida para não ter indentação errada)
+    # central_widget.thumbnails_columns = 4  # já definido acima
     return central_widget
 
 
@@ -244,7 +247,7 @@ def create_top_section(parent):
     download_btn.setMinimumWidth(100)
     download_btn.setMinimumHeight(32)
     download_btn.setEnabled(False)
-    download_btn.setVisible(False)
+    download_btn.setVisible(True)
     download_btn.setStyleSheet(f"""
         QPushButton {{
             background-color: {APP_NAME_COLOR};
@@ -297,7 +300,7 @@ def create_top_section(parent):
         checar_btn.setEnabled(has_text)
         # Reset download button when link changes
         if has_text:
-            download_btn.setVisible(False)
+            download_btn.setVisible(True)
             download_btn.setEnabled(False)
     
     link_input.textChanged.connect(on_link_changed)
@@ -305,6 +308,7 @@ def create_top_section(parent):
     # Connect checar button to fetch function
     def on_checar_clicked():
         url = link_input.text().strip()
+        parent.thumbnails_container.columns = 4
         if not url:
             parent.labels["status"].setText("Status: URL vazia!")
             return
@@ -541,9 +545,28 @@ def on_download_progress_update(parent, data):
 
 
 def on_download_complete(parent, checar_btn, download_btn):
+    # Evitar execução duplicada
+    if getattr(parent, '_download_complete_called', False):
+        return
+    parent._download_complete_called = True
     """Handle successful download completion."""
+    # Mensagem de confirmação com quantidade de imagens e vídeos
+    summary = getattr(parent, 'last_download_summary', None)
+    arquivos = summary["arquivos_baixados"] if summary and "arquivos_baixados" in summary else 0
+    msg = f"✓ DOWNLOAD CONCLUÍDO! Arquivos baixados: {arquivos}"
     parent.labels["status"].setText("Status: Download concluído!")
-    add_log_message(parent.log_widget, "✓ DOWNLOAD CONCLUÍDO!")
+    add_log_message(parent.log_widget, msg)
+    # Desabilitar botão de download ao concluir
+    if hasattr(parent, 'download_btn'):
+        parent.download_btn.setEnabled(False)
+    # Exibir mensagem modal de confirmação
+    dlg = QMessageBox(parent)
+    dlg.setWindowTitle("Download Concluído")
+    dlg.setText(msg)
+    dlg.setIcon(QMessageBox.Information)
+    dlg.setStandardButtons(QMessageBox.Ok)
+    dlg.setModal(True)
+    dlg.exec()
 
     # Se a opção de análise manual estiver marcada, exibir lista de arquivos falhados (nomes reais) e abrir janela de análise manual
     if hasattr(parent, 'checkboxes') and parent.checkboxes.get('analise_manual') and parent.checkboxes['analise_manual'].isChecked():
@@ -616,60 +639,31 @@ def refresh_downloaded_models_list(parent):
 
 def add_thumbnail(parent, file_path):
     """Add a thumbnail to the thumbnails container."""
-    if not hasattr(parent, 'thumbnails_container'):
+    # Adiciona thumbnail no QListWidget igual ao gui.py
+    thumb_list = parent.thumb_list if hasattr(parent, 'thumb_list') else parent.thumbnails_container
+    thumb_size = 120
+    pix = QPixmap(file_path)
+    if pix.isNull():
         return
-    
-    # Create thumbnail label
-    thumbnail = QLabel()
-    thumbnail.setFixedSize(80, 80)
-    thumbnail.setStyleSheet("""
-        QLabel {
-            background-color: #1e1e1e;
-            border: 1px solid #444;
-            border-radius: 3px;
-        }
-    """)
-    thumbnail.setAlignment(Qt.AlignCenter)
-    
-    # Try to load and display the image
-    try:
-        pixmap = QPixmap(file_path)
-        if not pixmap.isNull():
-            # center-crop to square
-            w = pixmap.width()
-            h = pixmap.height()
-            size = min(w, h)
-            x = (w - size) // 2
-            y = (h - size) // 2
-            cropped = pixmap.copy(x, y, size, size)
-            # scale to thumbnail size (ignore aspect since already square)
-            scaled_pixmap = cropped.scaled(80, 80, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            thumbnail.setPixmap(scaled_pixmap)
-        else:
-            # Show file icon if not an image
-            thumbnail.setText("📄")
-            thumbnail.setStyleSheet("""
-                QLabel {
-                    background-color: #2d2d2d;
-                    border: 1px solid #444;
-                    border-radius: 3px;
-                    font-size: 24px;
-                }
-            """)
-    except:
-        thumbnail.setText("?")
-        thumbnail.setStyleSheet("""
-            QLabel {
-                background-color: #2d2d2d;
-                border: 1px solid #444;
-                border-radius: 3px;
-                font-size: 24px;
-            }
-        """)
-    
-    # Get the layout and add thumbnail into grid
-    thumbnails_container = parent.thumbnails_container
-    layout = thumbnails_container.layout()
+    item = QListWidgetItem()
+    item.setSizeHint(QSize(thumb_size + 20, thumb_size + 35))
+    side = min(pix.width(), pix.height())
+    x = (pix.width() - side) // 2
+    y = (pix.height() - side) // 2
+    pix = pix.copy(x, y, side, side)
+    pix = pix.scaled(thumb_size, thumb_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    item.setIcon(QIcon(pix))
+    item.setData(Qt.UserRole, file_path)
+    thumb_list.insertItem(0, item)
+    if layout:
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            w = item.widget()
+            if w and hasattr(w, 'file_path') and getattr(w, 'file_path', None) == file_path:
+                return  # Já existe, não adiciona de novo
+
+    # Marcar o QLabel com o caminho do arquivo para evitar duplicação
+    thumbnail.file_path = file_path
 
     if layout and isinstance(layout, QGridLayout):
         cols = getattr(parent, 'thumbnails_columns', getattr(thumbnails_container, 'columns', 5))
@@ -706,28 +700,8 @@ def add_thumbnail(parent, file_path):
 
 def reflow_thumbnails(parent):
     """Reflow existing thumbnails according to current `thumbnails_columns`."""
-    if not hasattr(parent, 'thumbnails_container'):
-        return
-    container = parent.thumbnails_container
-    layout = container.layout()
-    if not isinstance(layout, QGridLayout):
-        return
-
-    # Collect existing thumbnail widgets
-    widgets = []
-    for i in reversed(range(layout.count())):
-        item = layout.takeAt(i)
-        w = item.widget()
-        if w:
-            widgets.append(w)
-
-    widgets.reverse()
-
-    cols = getattr(parent, 'thumbnails_columns', getattr(container, 'columns', 4))
-    for idx, w in enumerate(widgets):
-        row = idx // cols
-        col = idx % cols
-        layout.addWidget(w, row, col)
+    # Não é mais necessário com QListWidget responsivo
+    pass
 
 
 def add_log_message(log_widget, message, error=False, warning=False):
@@ -883,6 +857,18 @@ def create_right_panel():
 
 
 def create_bottom_section():
+        # Função para ajustar gridSize para sempre 4 colunas
+        def adjust_thumb_grid():
+            width = thumb_list.viewport().width()
+            spacing = thumb_list.spacing()
+            cols = 4
+            thumb_size = max(80, int((width - (cols - 1) * spacing) / cols))
+            thumb_list.setIconSize(QSize(thumb_size, thumb_size))
+            thumb_list.setGridSize(QSize(thumb_size + 20, thumb_size + 35))
+
+        # Ajusta ao inicializar e ao redimensionar
+        thumb_list.resizeEvent = lambda event: (adjust_thumb_grid(), QListWidget.resizeEvent(thumb_list, event))
+        adjust_thumb_grid()
     """Create the bottom section with progress bar, log area and thumbnails."""
     bottom_widget = QFrame()
     bottom_widget.setStyleSheet("background-color: #1e1e1e;")
@@ -958,53 +944,29 @@ def create_bottom_section():
     log_layout.addWidget(log_widget, 1)
     content_layout.addWidget(log_section, 1)
 
-    # Thumbnails section
+    # Thumbnails section substituído por QListWidget responsivo
     thumbnails_section = QWidget()
     thumbnails_layout = QVBoxLayout(thumbnails_section)
     thumbnails_layout.setContentsMargins(0, 0, 0, 0)
     thumbnails_layout.setSpacing(5)
 
-    # Thumbnails label
     thumb_label = QLabel("Downloads:")
     thumb_label.setStyleSheet("color: #ffffff; font-size: 11px;")
     thumbnails_layout.addWidget(thumb_label)
 
-    # Scroll area for thumbnails
-    scroll_area = QScrollArea()
-    scroll_area.setStyleSheet("""
-        QScrollArea {
-            background-color: #2d2d2d;
-            border: 1px solid #444;
-            border-radius: 3px;
-        }
-        QScrollBar:vertical {
-            background-color: #2d2d2d;
-            width: 8px;
-            border: none;
-        }
-        QScrollBar::handle:vertical {
-            background-color: #444;
-            border-radius: 4px;
-        }
-        QScrollBar::handle:vertical:hover {
-            background-color: #555;
-        }
-    """)
-    scroll_area.setWidgetResizable(True)
-
-    # Thumbnails container widget (grid)
-    thumbnails_container = QWidget()
-    thumbnails_container.setStyleSheet("background-color: #2d2d2d;")
-    thumbnails_grid = QGridLayout(thumbnails_container)
-    thumbnails_grid.setContentsMargins(8, 8, 8, 8)
-    thumbnails_grid.setSpacing(8)
-
-    # Default columns for the grid (can be overridden on the central widget)
-    thumbnails_container.columns = 5
-
-    scroll_area.setWidget(thumbnails_container)
-    thumbnails_layout.addWidget(scroll_area, 1)
+    thumb_list = QListWidget()
+    thumb_list.setViewMode(QListWidget.IconMode)
+    thumb_list.setResizeMode(QListWidget.Adjust)
+    thumb_list.setMovement(QListWidget.Static)
+    thumb_list.setSpacing(10)
+    thumb_size = 120
+    thumb_list.setIconSize(QSize(thumb_size, thumb_size))
+    thumb_list.setGridSize(QSize(thumb_size + 20, thumb_size + 35))
+    thumb_list.setStyleSheet("background-color: #2d2d2d; border: 1px solid #444; border-radius: 3px;")
+    thumbnails_layout.addWidget(thumb_list, 1)
     content_layout.addWidget(thumbnails_section, 1)
+    # Para compatibilidade com o restante do código:
+    thumbnails_container = thumb_list
     
     layout.addWidget(content_container, 1)
     

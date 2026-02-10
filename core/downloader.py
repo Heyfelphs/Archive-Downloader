@@ -26,7 +26,7 @@ def download_orchestrator(queue, url: str, workers: int):
         with ThreadPool(workers) as pool:
             pool.starmap(
                 download_worker,
-                zip(repeat(url), repeat(target_dir), range(total))
+                zip(repeat(url), repeat(target_dir), range(1, total + 1))
             )
 
         queue.put(COMPLETED_STATUS)

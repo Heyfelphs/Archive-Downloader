@@ -12,6 +12,9 @@ def prepare_filename(file_url: str, index: int, media_type: str) -> str:
 
 
 def download_worker(base_url: str, target_dir: str, index: int):
+    # Garante que a base termina com barra
+    if not base_url.endswith("/"):
+        base_url = base_url + "/"
     link = f"{base_url}{index}"
     model_name = link.split("/")[3]
 

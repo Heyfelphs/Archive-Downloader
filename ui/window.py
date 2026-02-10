@@ -50,17 +50,8 @@ class AppWindow(QMainWindow):
             central = self.centralWidget()
             if not central or not hasattr(central, 'thumbnails_container'):
                 return
-            thumbnails_container = central.thumbnails_container
-            # Determine available width inside the scroll area / container
-            available = thumbnails_container.width()
-            if available <= 0:
-                parent = thumbnails_container.parentWidget()
-                if parent:
-                    available = parent.width()
-            # Fixed number of columns for thumbnails grid
-            cols = 5
-            if getattr(central, 'thumbnails_columns', None) != cols:
-                central.thumbnails_columns = cols
-                reflow_thumbnails(central)
+            # Sempre refaz o layout das thumbnails ao redimensionar
+            central.thumbnails_columns = 5
+            reflow_thumbnails(central)
         except Exception:
             pass

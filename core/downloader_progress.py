@@ -1,3 +1,5 @@
+import threading
+import queue
 # core/downloader_progress.py
 
 from multiprocessing.pool import ThreadPool
@@ -28,6 +30,9 @@ def download_worker_with_progress(base_url: str, target_dir: str, index: int, pr
     global download_stats
     
     try:
+        # Garante que a base termina com barra
+        if not base_url.endswith("/"):
+            base_url = base_url + "/"
         link = f"{base_url}{index}"
         model_name = link.split("/")[3]
 
@@ -84,6 +89,14 @@ def download_worker_with_progress(base_url: str, target_dir: str, index: int, pr
 
 
 def download_orchestrator_with_progress(url: str, workers: int, progress_callback=None):
+    # Contador total de arquivos baixados
+    download_count = 0
+
+    def counting_download_worker_with_progress(base_url, target_dir, idx, progress_callback):
+        nonlocal download_count
+        download_count += 1
+        return download_worker_with_progress(base_url, target_dir, idx, progress_callback)
+
     """Download orchestrator with progress tracking."""
     global download_stats
     
@@ -104,33 +117,69 @@ def download_orchestrator_with_progress(url: str, workers: int, progress_callbac
                 "type": "status",
                 "status": DOWNLOADING_STATUS
             })
-        
         recreate_dir(target_dir)
 
         total = get_total_files(url)
-
-        with ThreadPool(workers) as pool:
-            pool.starmap(
-                download_worker_with_progress,
-                zip(
-                    repeat(url), 
-                    repeat(target_dir), 
-                    range(total),
-                    repeat(progress_callback)
-                )
+        indices = list(range(1, total + 1))
+        # Baixar tudo em paralelo (6 threads)
+        with ThreadPool(6) as pool:
+            pool.map(
+                lambda idx: counting_download_worker_with_progress(url, target_dir, idx, progress_callback),
+                indices
             )
 
-        # Emit final summary
+        # Tentar baixar páginas extras para cada página pulada (apenas vídeos, pois imagens já são sequenciais)
+        extra_attempts = 0
+        max_extra = 20  # Limite de tentativas extras para evitar loop infinito
+        while download_stats["skipped"] > 0 and extra_attempts < max_extra:
+            skipped_now = download_stats["skipped"]
+            download_stats["skipped"] = 0
+            indices_extras = [total + i + 1 for i in range(skipped_now)]
+            if not indices_extras:
+                break
+            # Checar tipo dos extras
+            extra_video_indices = []
+            extra_image_indices = []
+            for idx in indices_extras:
+                base_url = url if url.endswith("/") else url + "/"
+                link = f"{base_url}{idx}"
+                file_url, media_type = get_media_info(link)
+                if not file_url:
+                    continue
+                if media_type == "video":
+                    extra_video_indices.append(idx)
+                else:
+                    extra_image_indices.append(idx)
+            # Imagens extras sequencial
+            for idx in extra_image_indices:
+                download_worker_with_progress(url, target_dir, idx, progress_callback)
+            # Vídeos extras paralelo (máximo 3 simultâneos)
+            if extra_video_indices:
+                with ThreadPool(3) as pool:
+                    pool.starmap(
+                        download_worker_with_progress,
+                        zip(
+                            repeat(url),
+                            repeat(target_dir),
+                            extra_video_indices,
+                            repeat(progress_callback)
+                        )
+                    )
+            total += len(indices_extras)
+            extra_attempts += 1
+
+        # Emit final summary mantendo o valor inicial
         if progress_callback:
             progress_callback({
                 "type": "summary",
-                "total_expected": total,
+                "total_expected": get_total_files(url),
                 "success": download_stats["success"],
                 "failed": download_stats["failed"],
                 "skipped": download_stats["skipped"],
-                "failed_indices": download_stats["failed_indices"]
+                "failed_indices": download_stats["failed_indices"],
+                "arquivos_baixados": download_count
             })
-        
+
         if progress_callback:
             progress_callback({
                 "type": "status",
