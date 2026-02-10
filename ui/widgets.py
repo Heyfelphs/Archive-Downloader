@@ -1,3 +1,19 @@
+
+
+
+# Função para substituir o painel do meio sem modelos baixados
+def create_middle_section_no_models():
+    """Create the middle section with only the left info panel (no models list)."""
+    middle_widget = QWidget()
+    middle_widget.setStyleSheet("background-color: #1e1e1e;")
+    layout = QHBoxLayout(middle_widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    # Left panel
+    left_panel, labels_dict, checkboxes_dict = create_left_panel()
+    layout.addWidget(left_panel, 1)
+    # No right panel
+    return middle_widget, labels_dict, checkboxes_dict
 from PySide6.QtWidgets import QMessageBox
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
 from PySide6.QtCore import QSize
@@ -159,8 +175,8 @@ def build_ui(parent):
     top_section, link_input = create_top_section(central_widget)
     main_layout.addWidget(top_section)
     
-    # Middle section with left panel and right models list
-    middle_section, labels_dict, checkboxes_dict, models_list = create_middle_section()
+    # Middle section with only left panel (expand thumbnails area)
+    middle_section, labels_dict, checkboxes_dict = create_middle_section_no_models()
     main_layout.addWidget(middle_section, 1)
     
     # Bottom section with progress and log areas
@@ -174,7 +190,8 @@ def build_ui(parent):
     central_widget.progress_bar = progress_bar
     central_widget.progress_label = progress_label
     central_widget.log_widget = log_widget
-    central_widget.models_list = models_list
+    # Removido: models_list
+
     central_widget.thumbnails_container = thumbnails_container
     central_widget.thumb_list = thumbnails_container
     # default number of columns for thumbnails grid (fixo em 4)
@@ -667,14 +684,7 @@ def get_downloaded_models(base_path=None):
 
 
 def refresh_downloaded_models_list(parent):
-    """Refresh the downloaded models list widget."""
-    if hasattr(parent, 'models_list'):
-        parent.models_list.clear()
-        base_dir = getattr(parent, "download_root", None)
-        models = get_downloaded_models(base_dir)
-        for model in models:
-            item = QListWidgetItem(f"✓ {model}")
-            parent.models_list.addItem(item)
+    pass  # painel removido
 
 
 def add_thumbnail(parent, file_path):
