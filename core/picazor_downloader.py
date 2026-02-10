@@ -7,7 +7,7 @@ from utils.network import download_binary
 import os
 
 
-def picazor_download_orchestrator(url: str, target_dir: str, workers: int = 6, progress_callback=None):
+def picazor_download_orchestrator(url: str, target_dir: str, workers: int = 6, progress_callback=None, valid_indices=None):
     client = PicazorClient()
     model_name = url.split("/")[-1]
     if not target_dir:
@@ -15,7 +15,11 @@ def picazor_download_orchestrator(url: str, target_dir: str, workers: int = 6, p
     target_dir = os.fspath(target_dir)
     recreate_dir(target_dir)
 
-    post_urls = client.generate_post_urls(url)
+    # Se valid_indices for fornecido, use ela para montar as URLs
+    if valid_indices is not None:
+        post_urls = [f"{url}/{i}" for i in valid_indices]
+    else:
+        post_urls = client.generate_post_urls(url)
     total = len(post_urls)
 
     for idx, post_url in enumerate(post_urls, 1):

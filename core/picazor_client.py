@@ -20,7 +20,7 @@ class PicazorClient:
     # ---------------------------------------------------------
     # Descobre quantos posts realmente existem
     # ---------------------------------------------------------
-    def get_total_files(self, base_url: str) -> int:
+    def get_valid_indices(self, base_url: str):
         consecutive_404 = 0
         found = []
         for i in range(1, self.max_check + 1):
@@ -45,7 +45,10 @@ class PicazorClient:
                 continue
             found.append(i)
         print(f"[Picazor] Total files found: {len(found)}")
-        return len(found)
+        return found
+
+    def get_total_files(self, base_url: str) -> int:
+        return len(self.get_valid_indices(base_url))
 
     # ---------------------------------------------------------
     # Retorna (media_url, media_type)
@@ -55,17 +58,26 @@ class PicazorClient:
         if response.status_code != 200:
             return []
         soup = BeautifulSoup(response.text, "html.parser")
-        results = []
-        # Todas as imagens
-        for image in soup.find_all("img", src=compile(r"uploads")):
-            results.append((image.get("src"), "image"))
-        # Todos os vídeos
+        # Prioriza vídeo se existir, senão imagem
+        video_src = None
         for video in soup.find_all("video"):
             for source in video.find_all("source"):
                 src = source.get("src")
                 if src:
-                    results.append((src, "video"))
-        return results
+                    video_src = src
+                    break
+            if video_src:
+                break
+        if video_src:
+            return [(video_src, "video")]
+        image_src = None
+        for image in soup.find_all("img", src=compile(r"uploads")):
+            image_src = image.get("src")
+            if image_src:
+                break
+        if image_src:
+            return [(image_src, "image")]
+        return []
 
     # ---------------------------------------------------------
     # Verifica se a página contém mídia válida

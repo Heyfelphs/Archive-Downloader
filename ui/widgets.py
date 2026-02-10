@@ -74,18 +74,24 @@ class FetchWorker(QThread):
                 print("[FetchWorker] Detected Picazor link. Starting analysis...")
                 from core.picazor_client import PicazorClient
                 client = PicazorClient()
-                total_files = client.get_total_files(self.url)
+                valid_indices = client.get_valid_indices(self.url)
+                total_files = len(valid_indices)
                 print(f"[FetchWorker] Media found: {total_files} files")
             else:
+                valid_indices = None
                 total_files = get_fapello_total_files(self.url)
 
             # Extract model name robustly (handle trailing slash)
             parts = [p for p in self.url.split("/") if p]
             pasta = parts[-1] if parts else ""
 
+            # Salva a lista de índices válidos no próprio worker
+            self.valid_indices = valid_indices
+
             self.finished.emit({
                 "total": total_files,
-                "pasta": pasta
+                "pasta": pasta,
+                "valid_indices": valid_indices
             })
         except Exception as e:
             self.error.emit(f"Erro ao buscar: {str(e)}")
@@ -97,13 +103,14 @@ class DownloadWorker(QThread):
     finished = Signal()
     error = Signal(str)
     
-    def __init__(self, url: str, download_images: bool, download_videos: bool, total_files: int, target_dir: Path):
+    def __init__(self, url: str, download_images: bool, download_videos: bool, total_files: int, target_dir: Path, valid_indices=None):
         super().__init__()
         self.url = url
         self.download_images = download_images
         self.download_videos = download_videos
         self.total_files = total_files
         self.target_dir = target_dir
+        self.valid_indices = valid_indices
     
     def progress_callback(self, data):
         """Callback for progress updates from downloader."""
@@ -162,7 +169,8 @@ class DownloadWorker(QThread):
                     self.url,
                     str(self.target_dir),
                     workers=4,
-                    progress_callback=self.progress_callback
+                    progress_callback=self.progress_callback,
+                    valid_indices=self.valid_indices
                 )
             else:
                 download_orchestrator_with_progress(
@@ -559,8 +567,12 @@ def create_top_section(parent):
         
         # Reset failed files list for manual analysis
         parent.failed_files_for_analysis = []
+        # Recupera a lista de índices válidos do FetchWorker (se Picazor)
+        valid_indices = None
+        if hasattr(parent, "fetch_worker") and hasattr(parent.fetch_worker, "valid_indices"):
+            valid_indices = parent.fetch_worker.valid_indices
         # Create download worker thread
-        download_worker = DownloadWorker(url, download_images, download_videos, total_files, target_dir)
+        download_worker = DownloadWorker(url, download_images, download_videos, total_files, target_dir, valid_indices=valid_indices)
         download_worker.progress_update.connect(lambda data: on_download_progress_update(parent, data))
         download_worker.finished.connect(lambda: on_download_complete(parent, checar_btn, download_btn))
         download_worker.error.connect(lambda err: on_download_error(parent, err, checar_btn, download_btn))
