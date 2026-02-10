@@ -10,6 +10,10 @@ from PySide6.QtCore import Qt
 class AppWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        from PySide6.QtGui import QIcon
+        import os
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'archive-downloader.png')
+        self.setWindowIcon(QIcon(icon_path))
         self.setWindowTitle("Fapello Downloader")
         # Sempre maximizada e não redimensionável, mas pode minimizar
         # Tamanho fixo (exemplo: 1200x800), não redimensionável, pode minimizar/fechar
