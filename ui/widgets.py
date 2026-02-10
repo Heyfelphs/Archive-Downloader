@@ -422,18 +422,23 @@ def create_top_section(parent):
     # Connect checar button to fetch function
     def on_checar_clicked():
         url = link_input.text().strip()
+        # Limpa painel de log e thumbnails ao clicar em checar
+        if hasattr(parent, "log_widget"):
+            parent.log_widget.clear()
+        if hasattr(parent, "thumbnails_container"):
+            parent.thumbnails_container.clear()
         parent.thumbnails_container.columns = 4
         if not url:
             parent.labels["status"].setText("Status: URL vazia!")
             return
-        
+
         # Log message
         add_log_message(parent.log_widget, f"🔍 Buscando informações da URL: {url}")
-        
+
         # Disable checar button during fetch
         checar_btn.setEnabled(False)
         parent.labels["status"].setText("Status: Buscando...")
-        
+
         # Create worker thread
         worker = FetchWorker(url)
         worker.finished.connect(lambda data: on_fetch_complete(parent, data, checar_btn, download_btn))
@@ -449,11 +454,12 @@ def create_top_section(parent):
         if not url:
             parent.labels["status"].setText("Status: URL vazia!")
             return
-        
+
+
         # Get checkbox states
         download_images = parent.checkboxes["imagens"].isChecked()
         download_videos = parent.checkboxes["videos"].isChecked()
-        
+
         if not download_images and not download_videos:
             parent.labels["status"].setText("Status: Selecione imagens ou vídeos!")
             return
