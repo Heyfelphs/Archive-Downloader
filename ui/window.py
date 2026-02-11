@@ -1,9 +1,7 @@
 # ui/window.py
 
 from PySide6.QtWidgets import QMainWindow
-from PySide6.QtGui import QFont
 from ui.widgets import build_ui
-from ui.widgets import reflow_thumbnails
 from PySide6.QtCore import Qt
 
 
@@ -123,34 +121,34 @@ class AppWindow(QMainWindow):
         except Exception as e:
             print(f"Erro ao restaurar estado da UI: {e}")
 
-def closeEvent(self, event):
-    # Salvar estado das checkboxes e link
-    try:
-        from config import save_ui_state
-        central = self.centralWidget()
-        picazor_settings = {}
-        if hasattr(central, 'picazor_threads_input'):
-            try:
-                picazor_settings['threads'] = int(central.picazor_threads_input.value())
-            except (ValueError, TypeError):
-                pass
-        if hasattr(central, 'picazor_batch_input'):
-            try:
-                picazor_settings['batch'] = int(central.picazor_batch_input.value())
-            except (ValueError, TypeError):
-                pass
-        if hasattr(central, 'picazor_delay_input'):
-            try:
-                picazor_settings['delay'] = float(central.picazor_delay_input.value())
-            except (ValueError, TypeError):
-                pass
+    def closeEvent(self, event):
+        # Salvar estado das checkboxes e link
+        try:
+            from config import save_ui_state
+            central = self.centralWidget()
+            picazor_settings = {}
+            if hasattr(central, 'picazor_threads_input'):
+                try:
+                    picazor_settings['threads'] = int(central.picazor_threads_input.value())
+                except (ValueError, TypeError):
+                    pass
+            if hasattr(central, 'picazor_batch_input'):
+                try:
+                    picazor_settings['batch'] = int(central.picazor_batch_input.value())
+                except (ValueError, TypeError):
+                    pass
+            if hasattr(central, 'picazor_delay_input'):
+                try:
+                    picazor_settings['delay'] = float(central.picazor_delay_input.value())
+                except (ValueError, TypeError):
+                    pass
 
-        state = {
-            'checkboxes': {k: cb.isChecked() for k, cb in getattr(central, 'checkboxes', {}).items()},
-            'last_link': getattr(central, 'link_input', None).text() if hasattr(central, 'link_input') else '',
-            'picazor_settings': picazor_settings,
-        }
-        save_ui_state(state)
-    except Exception as e:
-        print(f"Erro ao salvar estado da UI: {e}")
-    super().closeEvent(event)
+            state = {
+                'checkboxes': {k: cb.isChecked() for k, cb in getattr(central, 'checkboxes', {}).items()},
+                'last_link': getattr(central, 'link_input', None).text() if hasattr(central, 'link_input') else '',
+                'picazor_settings': picazor_settings,
+            }
+            save_ui_state(state)
+        except Exception as e:
+            print(f"Erro ao salvar estado da UI: {e}")
+        super().closeEvent(event)

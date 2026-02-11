@@ -1,13 +1,10 @@
-import threading
-import queue
 import os
 # core/downloader_progress.py
 
 from multiprocessing.pool import ThreadPool
-from itertools import repeat
 from utils.filesystem import recreate_dir
 from core.fapello_client import get_total_files, get_media_info
-from core.worker import download_worker, prepare_filename
+from core.worker import prepare_filename
 from os.path import join
 from utils.network import download_binary
 from config import (
@@ -26,7 +23,14 @@ download_stats = {
 }
 
 
-def download_worker_with_progress(base_url: str, target_dir: str, index: int, progress_callback=None):
+def download_worker_with_progress(
+    base_url: str,
+    target_dir: str,
+    index: int,
+    progress_callback=None,
+    download_images: bool = True,
+    download_videos: bool = True,
+):
     """Download worker with progress callback."""
     global download_stats
     # Garante que a base termina com barra
@@ -34,6 +38,11 @@ def download_worker_with_progress(base_url: str, target_dir: str, index: int, pr
         base_url = base_url + "/"
     link = f"{base_url}{index}"
     model_name = link.split("/")[3]
+
+    def should_download(media_type: str) -> bool:
+        if media_type == "video":
+            return download_videos
+        return download_images
 
     # Importa get_media_info correto
     if "picazor.com" in base_url:
@@ -50,11 +59,12 @@ def download_worker_with_progress(base_url: str, target_dir: str, index: int, pr
                 base_domain = f"{parsed.scheme}://{parsed.netloc}"
                 media_list[i] = (base_domain + url, media_type)
     else:
-        from core.fapello_client import get_media_info
         media_list = []
         file_url, media_type = get_media_info(link)
         if file_url:
             media_list.append((file_url, media_type))
+
+    media_list = [item for item in media_list if should_download(item[1])]
 
     if not media_list:
         download_stats["skipped"] += 1
@@ -105,7 +115,14 @@ def download_worker_with_progress(base_url: str, target_dir: str, index: int, pr
                 })
 
 
-def download_orchestrator_with_progress(url, workers=6, progress_callback=None, target_dir=None):
+def download_orchestrator_with_progress(
+    url,
+    workers=6,
+    progress_callback=None,
+    target_dir=None,
+    download_images: bool = True,
+    download_videos: bool = True,
+):
     """Download orchestrator with progress tracking."""
     global download_stats
     download_stats = {
@@ -133,11 +150,19 @@ def download_orchestrator_with_progress(url, workers=6, progress_callback=None, 
             client = PicazorClient()
             valid_indices = client.get_valid_indices(url)
             if not valid_indices:
-                valid_indices = list(range(1, get_total_files(url) + 1))
+                valid_indices = list(range(1, client.get_total_files(url) + 1))
+            total_expected = len(valid_indices)
             # Baixar todos os índices válidos
             with ThreadPool(workers) as pool:
                 pool.map(
-                    lambda idx: download_worker_with_progress(url, target_dir, idx, progress_callback),
+                    lambda idx: download_worker_with_progress(
+                        url,
+                        target_dir,
+                        idx,
+                        progress_callback,
+                        download_images=download_images,
+                        download_videos=download_videos,
+                    ),
                     valid_indices
                 )
             # Continuar tentando além do maior índice encontrado até 10 skips consecutivos
@@ -146,18 +171,32 @@ def download_orchestrator_with_progress(url, workers=6, progress_callback=None, 
             max_idx = idx + 1000
             while consecutive_skips < 10 and idx < max_idx:
                 prev_skipped = download_stats["skipped"]
-                download_worker_with_progress(url, target_dir, idx, progress_callback)
+                download_worker_with_progress(
+                    url,
+                    target_dir,
+                    idx,
+                    progress_callback,
+                    download_images=download_images,
+                    download_videos=download_videos,
+                )
                 if download_stats["skipped"] > prev_skipped:
                     consecutive_skips += 1
                 else:
                     consecutive_skips = 0
                 idx += 1
         else:
-            total = get_total_files(url)
-            indices = list(range(1, total + 1))
+            total_expected = get_total_files(url)
+            indices = list(range(1, total_expected + 1))
             with ThreadPool(workers) as pool:
                 pool.map(
-                    lambda idx: download_worker_with_progress(url, target_dir, idx, progress_callback),
+                    lambda idx: download_worker_with_progress(
+                        url,
+                        target_dir,
+                        idx,
+                        progress_callback,
+                        download_images=download_images,
+                        download_videos=download_videos,
+                    ),
                     indices
                 )
 
@@ -165,7 +204,7 @@ def download_orchestrator_with_progress(url, workers=6, progress_callback=None, 
         if progress_callback:
             progress_callback({
                 "type": "summary",
-                "total_expected": get_total_files(url),
+                "total_expected": total_expected,
                 "success": download_stats["success"],
                 "failed": download_stats["failed"],
                 "skipped": download_stats["skipped"],

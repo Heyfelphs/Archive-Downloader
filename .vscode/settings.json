@@ -3,5 +3,8 @@
         "."
     ],
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+    "python.testing.pytestEnabled": true,
+    "chat.tools.terminal.autoApprove": {
+        "C:/Estudo/Archive-Downloader/.venv/Scripts/python.exe": true
+    }
 }

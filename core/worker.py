@@ -16,7 +16,6 @@ def download_worker(base_url: str, target_dir: str, index: int):
     if not base_url.endswith("/"):
         base_url = base_url + "/"
     link = f"{base_url}{index}"
-    model_name = link.split("/")[3]
 
     # Importa get_media_info correto
     if "picazor.com" in base_url:

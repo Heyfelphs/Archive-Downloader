@@ -1,7 +1,6 @@
 # app.py
 
 import sys
-from multiprocessing import Queue
 from PySide6.QtWidgets import QApplication
 from ui.window import AppWindow
 

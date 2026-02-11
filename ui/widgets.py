@@ -1,8 +1,8 @@
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-    QCheckBox, QPushButton, QListWidget, QListWidgetItem, 
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QPushButton, QListWidget, QListWidgetItem,
     QFrame, QProgressBar, QTextEdit, QFileDialog,
-    QSpinBox, QDoubleSpinBox, QMessageBox, QDialog, QDialogButtonBox
+    QSpinBox, QDoubleSpinBox, QMessageBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QSize
 from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices, QColor, QPainter, QImage
@@ -17,44 +17,6 @@ from config import (
 )
 from core.fapello_client import get_total_files as get_fapello_total_files
 from core.downloader_progress import download_orchestrator_with_progress
-
-
-# Função para substituir o painel do meio sem modelos baixados
-def create_middle_section_no_models():
-    """Create the middle section with only the left info panel (no models list)."""
-    middle_widget = QWidget()
-    middle_widget.setStyleSheet("background-color: #1e1e1e;")
-    layout = QHBoxLayout(middle_widget)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(0)
-    # Left panel
-    left_panel, labels_dict, checkboxes_dict = create_left_panel()
-    layout.addWidget(left_panel, 1)
-    # No right panel
-    return middle_widget, labels_dict, checkboxes_dict
-
-
-# Janela para análise manual de imagens
-class ManualReviewDialog(QDialog):
-    def __init__(self, parent, url_list):
-        super().__init__(parent)
-        self.setWindowTitle("Análise Manual de Arquivos Falhados")
-        self.setMinimumSize(700, 400)
-        layout = QVBoxLayout(self)
-        label = QLabel("Selecione as URLs das imagens que deseja baixar manualmente:")
-        layout.addWidget(label)
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QListWidget.MultiSelection)
-        for url in url_list:
-            item = QListWidgetItem(url)
-            self.list_widget.addItem(item)
-        layout.addWidget(self.list_widget)
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-    def get_selected(self):
-        return [item.text() for item in self.list_widget.selectedItems()]
 
 
 class FetchWorker(QThread):
@@ -1046,12 +1008,6 @@ def _update_thumbnail_icon(thumb_list, file_path, icon):
 
 
 
-def reflow_thumbnails(parent):
-    """Reflow existing thumbnails according to current `thumbnails_columns`."""
-    # Não é mais necessário com QListWidget responsivo
-    pass
-
-
 def add_log_message(log_widget, message, error=False, warning=False):
     """Adiciona mensagem ao log de atividades com tags e cor de linha para tipo de conteúdo."""
     # Detecta imagem/video
@@ -1087,25 +1043,6 @@ def add_log_message(log_widget, message, error=False, warning=False):
     # Auto-scroll to bottom
     scrollbar = log_widget.verticalScrollBar()
     scrollbar.setValue(scrollbar.maximum())
-
-def create_middle_section():
-    """Create the middle section with left info panel and right models list."""
-    middle_widget = QWidget()
-    middle_widget.setStyleSheet("background-color: #1e1e1e;")
-    layout = QHBoxLayout(middle_widget)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(0)
-    
-    # Left panel
-    left_panel, labels_dict, checkboxes_dict = create_left_panel()
-    layout.addWidget(left_panel, 1)
-    
-    # Right panel with models list
-    right_panel, models_list = create_right_panel()
-    layout.addWidget(right_panel, 1)
-    
-    return middle_widget, labels_dict, checkboxes_dict, models_list
-
 
 def create_left_panel():
     """Create the left panel with checkboxes and info."""
@@ -1249,172 +1186,4 @@ def create_left_panel():
     return left_widget, labels_dict, checkboxes_dict
 
 
-def create_right_panel():
-    """Create the right panel with downloaded models list."""
-    right_widget = QFrame()
-    right_widget.setStyleSheet("background-color: #252525;")
-    layout = QVBoxLayout(right_widget)
-    layout.setContentsMargins(15, 15, 15, 15)
-    layout.setSpacing(8)
-    
-    # Title
-    title_label = QLabel("Modelos Baixados")
-    title_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 12px;")
-    layout.addWidget(title_label)
-    
-    # Models list
-    models_list = QListWidget()
-    models_list.setStyleSheet("""
-        QListWidget {
-            background-color: #2d2d2d;
-            color: #90EE90;
-            border: 1px solid #444;
-            border-radius: 3px;
-            font-size: 10px;
-        }
-        QListWidget::item:hover {
-            background-color: #3d3d3d;
-        }
-        QListWidget::item:selected {
-            background-color: #90EE90;
-            color: #000000;
-        }
-    """)
-    layout.addWidget(models_list)
-    
-    return right_widget, models_list
-
-
-def create_bottom_section():
-    """Create the bottom section with progress bar, log area and thumbnails."""
-    thumb_list = QListWidget()
-    thumb_list.setViewMode(QListWidget.IconMode)
-    thumb_list.setResizeMode(QListWidget.Adjust)
-    thumb_list.setMovement(QListWidget.Static)
-    thumb_list.setSpacing(10)
-    thumb_size = 120
-    thumb_list.setIconSize(QSize(thumb_size, thumb_size))
-    thumb_list.setGridSize(QSize(thumb_size + 20, thumb_size + 35))
-    thumb_list.setStyleSheet("background-color: #2d2d2d; border: 1px solid #444; border-radius: 3px;")
-
-    # Função para ajustar gridSize para sempre 4 colunas
-    # Como a janela é fixa e maximizada, calcula o tamanho das thumbnails uma vez
-    cols = 4
-    spacing = thumb_list.spacing()
-    frame = thumb_list.frameWidth() * 2
-    # Usa a largura do thumb_list após maximizar
-    def set_fixed_thumb_grid():
-        # Só executa se thumb_list ainda existir
-        try:
-            width = thumb_list.width() - frame
-        except RuntimeError:
-            return
-        width = thumb_list.width() - frame
-        thumb_size = int((width - (cols - 1) * spacing) / cols)
-        thumb_list.setIconSize(QSize(thumb_size, thumb_size))
-        thumb_list.setGridSize(QSize(thumb_size, thumb_size))
-        thumb_list.setStyleSheet("QListWidget::item { margin: 0; padding: 0; }")
-        thumb_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    QTimer.singleShot(100, set_fixed_thumb_grid)
-    bottom_widget = QFrame()
-    bottom_widget.setStyleSheet("background-color: #1e1e1e;")
-    layout = QVBoxLayout(bottom_widget)
-    layout.setContentsMargins(15, 10, 15, 15)
-    layout.setSpacing(10)
-    
-    # Progress info
-    progress_label = QLabel("0 / 0 arquivos (0%)")
-    progress_label.setStyleSheet("color: #ffffff; font-size: 11px;")
-    layout.addWidget(progress_label)
-    
-    # Progress bar
-    progress_bar = QProgressBar()
-    progress_bar.setStyleSheet("""
-        QProgressBar {
-            background-color: #2d2d2d;
-            border: 1px solid #444;
-            border-radius: 3px;
-            height: 20px;
-        }
-        QProgressBar::chunk {
-            background-color: #ffbf00;
-        }
-    """)
-    progress_bar.setValue(0)
-    progress_bar.setMinimumHeight(20)
-    layout.addWidget(progress_bar)
-    
-    # Log and thumbnails container
-    content_container = QWidget()
-    content_layout = QHBoxLayout(content_container)
-    content_layout.setContentsMargins(0, 0, 0, 0)
-    content_layout.setSpacing(10)
-    
-    # Log section
-    log_section = QWidget()
-    log_layout = QVBoxLayout(log_section)
-    log_layout.setContentsMargins(0, 0, 0, 0)
-    log_layout.setSpacing(5)
-    
-    # Log label
-    log_label = QLabel("Log de Atividades:")
-    log_label.setStyleSheet("color: #ffffff; font-size: 11px;")
-    log_layout.addWidget(log_label)
-    
-    # Log widget
-    log_widget = QTextEdit()
-    log_widget.setReadOnly(True)
-    log_widget.setStyleSheet("""
-        QTextEdit {
-            background-color: #2d2d2d;
-            color: #ffffff;
-            border: 1px solid #444;
-            border-radius: 3px;
-            font-family: 'Courier New', monospace;
-            font-size: 10px;
-        }
-        QScrollBar:vertical {
-            background-color: #2d2d2d;
-            width: 8px;
-            border: none;
-        }
-        QScrollBar::handle:vertical {
-            background-color: #444;
-            border-radius: 4px;
-        }
-        QScrollBar::handle:vertical:hover {
-            background-color: #555;
-        }
-    """)
-    log_widget.setMinimumHeight(150)
-    log_layout.addWidget(log_widget, 1)
-    content_layout.addWidget(log_section, 1)
-
-    # Thumbnails section substituído por QListWidget responsivo
-    thumbnails_section = QWidget()
-    thumbnails_layout = QVBoxLayout(thumbnails_section)
-    thumbnails_layout.setContentsMargins(0, 0, 0, 0)
-    thumbnails_layout.setSpacing(5)
-
-    thumb_label = QLabel("Downloads:")
-    thumb_label.setStyleSheet("color: #ffffff; font-size: 11px;")
-    thumbnails_layout.addWidget(thumb_label)
-
-    thumb_list = QListWidget()
-    thumb_list.setViewMode(QListWidget.IconMode)
-    thumb_list.setResizeMode(QListWidget.Adjust)
-    thumb_list.setMovement(QListWidget.Static)
-    thumb_list.setSpacing(10)
-    thumb_size = 120
-    thumb_list.setIconSize(QSize(thumb_size, thumb_size))
-    thumb_list.setGridSize(QSize(thumb_size + 20, thumb_size + 35))
-    thumb_list.setStyleSheet("background-color: #2d2d2d; border: 1px solid #444; border-radius: 3px;")
-    thumbnails_layout.addWidget(thumb_list, 1)
-    content_layout.addWidget(thumbnails_section, 1)
-    # Para compatibilidade com o restante do código:
-    thumbnails_container = thumb_list
-    
-    layout.addWidget(content_container, 1)
-    
-    return bottom_widget, progress_bar, progress_label, log_widget, thumbnails_container
 
