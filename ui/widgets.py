@@ -1,4 +1,22 @@
-
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
+    QCheckBox, QPushButton, QListWidget, QListWidgetItem, 
+    QFrame, QProgressBar, QTextEdit, QFileDialog,
+    QSpinBox, QDoubleSpinBox, QMessageBox, QDialog, QDialogButtonBox
+)
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QSize
+from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices, QColor, QPainter, QImage
+from pathlib import Path
+import os
+import html
+from config import (
+    APP_NAME_COLOR,
+    PICAZOR_CHECK_THREADS_DEFAULT,
+    PICAZOR_CHECK_BATCH_DEFAULT,
+    PICAZOR_CHECK_DELAY_DEFAULT,
+)
+from core.fapello_client import get_total_files as get_fapello_total_files
+from core.downloader_progress import download_orchestrator_with_progress
 
 
 # Função para substituir o painel do meio sem modelos baixados
@@ -14,9 +32,8 @@ def create_middle_section_no_models():
     layout.addWidget(left_panel, 1)
     # No right panel
     return middle_widget, labels_dict, checkboxes_dict
-from PySide6.QtWidgets import QMessageBox
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
-from PySide6.QtCore import QSize
+
+
 # Janela para análise manual de imagens
 class ManualReviewDialog(QDialog):
     def __init__(self, parent, url_list):
@@ -38,21 +55,6 @@ class ManualReviewDialog(QDialog):
         layout.addWidget(button_box)
     def get_selected(self):
         return [item.text() for item in self.list_widget.selectedItems()]
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-    QCheckBox, QPushButton, QListWidget, QListWidgetItem, 
-    QFrame, QProgressBar, QScrollArea, QTextEdit, QGridLayout, QSizePolicy, QFileDialog
-)
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtCore import QTimer, QUrl
-from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices, QColor, QPainter
-from datetime import datetime
-from config import APP_NAME, VERSION, APP_NAME_COLOR
-from core.fapello_client import get_total_files as get_fapello_total_files
-from core.downloader_progress import download_orchestrator_with_progress
-from multiprocessing import Queue
-import os
-from pathlib import Path
 
 
 class FetchWorker(QThread):
@@ -61,9 +63,12 @@ class FetchWorker(QThread):
     error = Signal(str)
     progress = Signal(int)  # Novo sinal para progresso de arquivos válidos
     
-    def __init__(self, url: str):
+    def __init__(self, url: str, picazor_threads: int, picazor_batch: int, picazor_delay: float):
         super().__init__()
         self.url = url
+        self.picazor_threads = picazor_threads
+        self.picazor_batch = picazor_batch
+        self.picazor_delay = picazor_delay
     
     def run(self):
         try:
@@ -74,11 +79,13 @@ class FetchWorker(QThread):
             if "picazor.com" in self.url:
                 print("[FetchWorker] Detected Picazor link. Starting analysis...")
                 from core.picazor_client import PicazorClient
-                client = PicazorClient()
-                valid_indices = []
-                for idx in client.get_valid_indices_yield(self.url):
-                    valid_indices.append(idx)
-                    self.progress.emit(len(valid_indices))
+                client = PicazorClient(delay=self.picazor_delay)
+                valid_indices = client.get_valid_indices_multithread(
+                    self.url,
+                    num_threads=self.picazor_threads,
+                    batch_size=self.picazor_batch,
+                    progress_callback=self.progress.emit,
+                )
                 total_files = len(valid_indices)
                 print(f"[FetchWorker] Media found: {total_files} files")
             else:
@@ -118,7 +125,6 @@ class ThumbnailWorker(QThread):
             cap.release()
             if ret:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                from PySide6.QtGui import QImage
                 height, width, channel = frame.shape
                 bytes_per_line = channel * width
                 qimg = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
@@ -157,7 +163,18 @@ class DownloadWorker(QThread):
     finished = Signal()
     error = Signal(str)
     
-    def __init__(self, url: str, download_images: bool, download_videos: bool, total_files: int, target_dir: Path, valid_indices=None):
+    def __init__(
+        self,
+        url: str,
+        download_images: bool,
+        download_videos: bool,
+        total_files: int,
+        target_dir: Path,
+        valid_indices=None,
+        picazor_threads: int = PICAZOR_CHECK_THREADS_DEFAULT,
+        picazor_batch: int = PICAZOR_CHECK_BATCH_DEFAULT,
+        picazor_delay: float = PICAZOR_CHECK_DELAY_DEFAULT,
+    ):
         super().__init__()
         self.url = url
         self.download_images = download_images
@@ -165,6 +182,9 @@ class DownloadWorker(QThread):
         self.total_files = total_files
         self.target_dir = target_dir
         self.valid_indices = valid_indices
+        self.picazor_threads = picazor_threads
+        self.picazor_batch = picazor_batch
+        self.picazor_delay = picazor_delay
         self.processed_count = 0  # Rastreia arquivos processados (success + failed + skipped)
     
     def progress_callback(self, data):
@@ -233,16 +253,22 @@ class DownloadWorker(QThread):
                 picazor_download_orchestrator(
                     self.url,
                     str(self.target_dir),
-                    workers=4,
+                    workers=self.picazor_threads,
                     progress_callback=self.progress_callback,
-                    valid_indices=self.valid_indices
+                    valid_indices=self.valid_indices,
+                    link_check_batch=self.picazor_batch,
+                    link_check_delay=self.picazor_delay,
+                    download_images=self.download_images,
+                    download_videos=self.download_videos,
                 )
             else:
                 download_orchestrator_with_progress(
                     self.url, 
                     workers=4,
                     progress_callback=self.progress_callback,
-                    target_dir=self.target_dir
+                    target_dir=self.target_dir,
+                    download_images=self.download_images,
+                    download_videos=self.download_videos,
                 )
             self.finished.emit()
         except Exception as e:
@@ -379,6 +405,12 @@ def build_ui(parent):
     central_widget.log_widget = log_widget
     central_widget.thumbnails_container = thumbnails_container
     central_widget.thumb_list = thumbnails_container
+    if hasattr(left_panel, "picazor_threads_input"):
+        central_widget.picazor_threads_input = left_panel.picazor_threads_input
+    if hasattr(left_panel, "picazor_batch_input"):
+        central_widget.picazor_batch_input = left_panel.picazor_batch_input
+    if hasattr(left_panel, "picazor_delay_input"):
+        central_widget.picazor_delay_input = left_panel.picazor_delay_input
     # default number of columns for thumbnails grid (fixo em 4)
     central_widget.thumbnails_columns = 4
     # limit how many thumbnails are kept in the grid
@@ -543,8 +575,16 @@ def create_top_section(parent):
         checar_btn.setEnabled(False)
         parent.labels["status"].setText("Status: Buscando...")
 
+        picazor_threads_input = getattr(parent, "picazor_threads_input", None)
+        picazor_batch_input = getattr(parent, "picazor_batch_input", None)
+        picazor_delay_input = getattr(parent, "picazor_delay_input", None)
+
+        picazor_threads = picazor_threads_input.value() if picazor_threads_input else PICAZOR_CHECK_THREADS_DEFAULT
+        picazor_batch = picazor_batch_input.value() if picazor_batch_input else PICAZOR_CHECK_BATCH_DEFAULT
+        picazor_delay = picazor_delay_input.value() if picazor_delay_input else PICAZOR_CHECK_DELAY_DEFAULT
+
         # Create worker thread
-        worker = FetchWorker(url)
+        worker = FetchWorker(url, picazor_threads, picazor_batch, picazor_delay)
         worker.finished.connect(lambda data: on_fetch_complete(parent, data, checar_btn, download_btn))
         worker.error.connect(lambda err: on_fetch_error(parent, err, checar_btn))
         # Atualiza label arquivos em tempo real para Picazor
@@ -647,8 +687,26 @@ def create_top_section(parent):
         valid_indices = None
         if hasattr(parent, "fetch_worker") and hasattr(parent.fetch_worker, "valid_indices"):
             valid_indices = parent.fetch_worker.valid_indices
+        picazor_threads_input = getattr(parent, "picazor_threads_input", None)
+        picazor_batch_input = getattr(parent, "picazor_batch_input", None)
+        picazor_delay_input = getattr(parent, "picazor_delay_input", None)
+
+        picazor_threads = picazor_threads_input.value() if picazor_threads_input else PICAZOR_CHECK_THREADS_DEFAULT
+        picazor_batch = picazor_batch_input.value() if picazor_batch_input else PICAZOR_CHECK_BATCH_DEFAULT
+        picazor_delay = picazor_delay_input.value() if picazor_delay_input else PICAZOR_CHECK_DELAY_DEFAULT
+
         # Create download worker thread
-        download_worker = DownloadWorker(url, download_images, download_videos, total_files, target_dir, valid_indices=valid_indices)
+        download_worker = DownloadWorker(
+            url,
+            download_images,
+            download_videos,
+            total_files,
+            target_dir,
+            valid_indices=valid_indices,
+            picazor_threads=picazor_threads,
+            picazor_batch=picazor_batch,
+            picazor_delay=picazor_delay,
+        )
         download_worker.progress_update.connect(lambda data: on_download_progress_update(parent, data))
         download_worker.finished.connect(lambda: on_download_complete(parent, checar_btn, download_btn))
         download_worker.error.connect(lambda err: on_download_error(parent, err, checar_btn, download_btn))
@@ -686,16 +744,25 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
     parent.labels["total"].setText(f"Total: {data['total']}")
     parent.labels["pasta"].setText(f"Pasta: {data['pasta']}")
     parent.labels["status"].setText("Status: Pronto")
-    parent.progress_bar.setMaximum(data['total'])
-    parent.progress_label.setText(f"0 / {data['total']} arquivos (0%)")
-
+    
     # Atualiza label arquivos para Picazor
     url = parent.link_input.text().strip() if hasattr(parent, 'link_input') else ""
     if "picazor.com" in url:
+        # Para Picazor, data['total'] é o número de índices/páginas, não de arquivos reais
+        # O total real será recebido no 'summary' durante o download
         parent.labels["arquivos"].setVisible(True)
         parent.labels["arquivos"].setText(f"Arquivos: {data['total']}")
+        # Define maximum para um valor alto temporário; será atualizado quando o summary chegar
+        parent.progress_bar.setMaximum(1000)
+        parent.progress_label.setText(f"0 / ? arquivos (0%)")
+        # Marca que o total real é desconhecido para Picazor
+        parent._picazor_real_total_unknown = True
     else:
+        # Para Fapello, data['total'] é o número real de arquivos
         parent.labels["arquivos"].setVisible(False)
+        parent.progress_bar.setMaximum(data['total'])
+        parent.progress_label.setText(f"0 / {data['total']} arquivos (0%)")
+        parent._picazor_real_total_unknown = False
 
     if data['total'] == 0:
         QMessageBox.warning(parent, "Link inválido ou não validado", "O link informado não é válido ou não pôde ser validado. Por favor, insira um link válido.")
@@ -703,7 +770,7 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
         return
 
     # Log message
-    add_log_message(parent.log_widget, f"✓ Busca concluída: {data['total']} arquivo(s) encontrado(s)")
+    add_log_message(parent.log_widget, f"✓ Busca concluída: {data['total']} item(ns) processado(s)")
     add_log_message(parent.log_widget, f"Pasta definida: {data['pasta']}")
     base_dir = getattr(parent, "download_root", Path("catalog") / "models")
     add_log_message(parent.log_widget, f"Destino: {base_dir}")
@@ -834,16 +901,17 @@ def on_download_progress_update(parent, data):
         add_log_message(parent.log_widget, f"• Status: {status}")
 
 
-
 def on_download_complete(parent, checar_btn, download_btn):
-    # Evitar execução duplicada
+    """Handle successful download completion."""
+    if getattr(parent, "_download_complete_called", False):
+        return
+
     # Mensagem de confirmação com quantidade de arquivos baixados:
     # usar, quando disponível, a contagem de sucessos (ex.: armazenada em parent.download_success_count)
     arquivos = getattr(parent, "download_success_count", parent.progress_bar.value())
     parent._download_complete_called = True
     # Handle successful download completion.
-    # Mensagem de confirmação com quantidade de arquivos baixados (usa valor da barra de progresso)
-    arquivos = parent.progress_bar.value()
+
     msg = f"✓ DOWNLOAD CONCLUÍDO! Arquivos baixados: {arquivos}"
     parent.labels["status"].setText("Status: Download concluído!")
     # (Removido: log de conclusão no final do download)
@@ -912,33 +980,34 @@ def add_thumbnail(parent, file_path):
     item.setData(Qt.UserRole, file_path)
     
     if ext in ['.mp4', '.avi', '.mov', '.mkv']:
-        
-        if not hasattr(parent, '_thumbnail_workers'):
-            parent._thumbnail_workers = []
-        parent._thumbnail_workers.append(thumbnail_worker)
+        # Insert a placeholder icon immediately, then update it asynchronously.
+        item.setIcon(QIcon(_create_video_placeholder(thumb_size)))
+        thumb_list.insertItem(0, item)
 
-        def _cleanup_thumbnail_worker():
-            # Remove worker reference and schedule deletion to free resources
-            try:
-                if hasattr(parent, '_thumbnail_workers') and thumbnail_worker in parent._thumbnail_workers:
-                    parent._thumbnail_workers.remove(thumbnail_worker)
-            except ValueError:
-                # Worker already removed; ignore
-                pass
-            thumbnail_worker.deleteLater()
-
-        thumbnail_worker.finished.connect(_cleanup_thumbnail_worker)
-        thumbnail_worker.start()
-        # Start worker thread to generate actual thumbnail
+        # Create and configure worker before connecting signals
         thumbnail_worker = ThumbnailWorker(file_path, thumb_size)
+        
+        # Connect signals
         thumbnail_worker.thumbnail_ready.connect(
             lambda fp, icon: _update_thumbnail_icon(thumb_list, fp, icon)
         )
-        thumbnail_worker.start()
-        
+
+        def _cleanup_thumbnail_worker(worker=thumbnail_worker):
+            # Remove worker reference and schedule deletion to free resources.
+            try:
+                if hasattr(parent, '_thumbnail_workers') and worker in parent._thumbnail_workers:
+                    parent._thumbnail_workers.remove(worker)
+            except ValueError:
+                # Worker already removed; ignore.
+                pass
+            worker.deleteLater()
+
+        thumbnail_worker.finished.connect(_cleanup_thumbnail_worker)
+
         if not hasattr(parent, '_thumbnail_workers'):
             parent._thumbnail_workers = []
         parent._thumbnail_workers.append(thumbnail_worker)
+        thumbnail_worker.start()
     else:
         # Image: load directly
         pix = QPixmap(file_path)
@@ -985,23 +1054,15 @@ def reflow_thumbnails(parent):
 
 def add_log_message(log_widget, message, error=False, warning=False):
     """Adiciona mensagem ao log de atividades com tags e cor de linha para tipo de conteúdo."""
-    import html
-    
-    # Remove mensagens de thumbnail
-    if (
-        message.startswith("Thumbnail encontrado:") or
-        message.startswith("Tentando thumbnail:") or
-        message.startswith("Thumbnail não encontrado") or
-        message.startswith("Procurando alternativa:") or
-        message.startswith("Alternativa encontrada:")
-    ):
-        return
-
     # Detecta imagem/video
     is_img = "imagem" in message or "jpg" in message or "[IMG]" in message or (message.startswith("✓ Concluído ") and ".jpg" in message)
     is_video = "video" in message or "mp4" in message or "[VIDEO]" in message or (message.startswith("✓ Concluído ") and ".mp4" in message)
+    is_thumb = message.startswith("Thumbnail:")
 
-    if is_img:
+    if is_thumb:
+        tag = "[THUMB]"
+        color = "#B10DC9"  # roxo
+    elif is_img:
         tag = "[IMG]"
         color = "#0074D9"  # azul
     elif is_video:
@@ -1075,9 +1136,62 @@ def create_left_panel():
     baixar_videos.setStyleSheet(checkbox_style)
     layout.addWidget(baixar_videos)
 
-    
-    # Info labels
+    # Picazor settings
     info_style = "color: #ffffff; font-size: 11px;"
+    spin_style = """
+        QSpinBox, QDoubleSpinBox {
+            background-color: #2d2d2d;
+            color: #ffffff;
+            border: 1px solid #555;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+    """
+
+    picazor_title = QLabel("Picazor (checagem)")
+    picazor_title.setStyleSheet(info_style)
+    picazor_title.setToolTip("Ajustes usados apenas na checagem de links do Picazor")
+    layout.addWidget(picazor_title)
+
+    threads_layout = QHBoxLayout()
+    threads_label = QLabel("Threads:")
+    threads_label.setStyleSheet(info_style)
+    picazor_threads_input = QSpinBox()
+    picazor_threads_input.setRange(1, 32)
+    picazor_threads_input.setValue(PICAZOR_CHECK_THREADS_DEFAULT)
+    picazor_threads_input.setStyleSheet(spin_style)
+    picazor_threads_input.setToolTip("Número de threads na checagem de links do Picazor")
+    threads_layout.addWidget(threads_label)
+    threads_layout.addWidget(picazor_threads_input)
+    layout.addLayout(threads_layout)
+
+    batch_layout = QHBoxLayout()
+    batch_label = QLabel("Lote:")
+    batch_label.setStyleSheet(info_style)
+    picazor_batch_input = QSpinBox()
+    picazor_batch_input.setRange(5, 200)
+    picazor_batch_input.setValue(PICAZOR_CHECK_BATCH_DEFAULT)
+    picazor_batch_input.setStyleSheet(spin_style)
+    picazor_batch_input.setToolTip("Quantidade de índices por rodada de checagem")
+    batch_layout.addWidget(batch_label)
+    batch_layout.addWidget(picazor_batch_input)
+    layout.addLayout(batch_layout)
+
+    delay_layout = QHBoxLayout()
+    delay_label = QLabel("Delay (s):")
+    delay_label.setStyleSheet(info_style)
+    picazor_delay_input = QDoubleSpinBox()
+    picazor_delay_input.setRange(0.0, 5.0)
+    picazor_delay_input.setSingleStep(0.1)
+    picazor_delay_input.setDecimals(2)
+    picazor_delay_input.setValue(PICAZOR_CHECK_DELAY_DEFAULT)
+    picazor_delay_input.setStyleSheet(spin_style)
+    picazor_delay_input.setToolTip("Delay entre rodadas de checagem (segundos)")
+    delay_layout.addWidget(delay_label)
+    delay_layout.addWidget(picazor_delay_input)
+    layout.addLayout(delay_layout)
+
+    # Info labels
     
     total_label = QLabel("Total: 0")
     total_label.setStyleSheet(info_style)
@@ -1129,6 +1243,9 @@ def create_left_panel():
         "imagens": baixar_imagens,
         "videos": baixar_videos
     }
+    left_widget.picazor_threads_input = picazor_threads_input
+    left_widget.picazor_batch_input = picazor_batch_input
+    left_widget.picazor_delay_input = picazor_delay_input
     return left_widget, labels_dict, checkboxes_dict
 
 

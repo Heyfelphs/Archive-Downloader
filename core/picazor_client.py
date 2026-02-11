@@ -2,21 +2,25 @@
 
 from bs4 import BeautifulSoup
 from re import compile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import cloudscraper
+import threading
 import time
 
 
 class PicazorClient:
-    def _fetch_url_with_retries(self, url: str):
+    def _fetch_url_with_retries(self, url: str, scraper=None):
         """
         Tenta buscar uma URL com retries exponenciais.
         Retorna (response, success) onde success indica se a requisição teve sucesso.
         """
+        if scraper is None:
+            scraper = self.scraper
         retries = 0
         max_retries = 3
         while retries < max_retries:
             try:
-                response = self.scraper.get(url, timeout=10)
+                response = scraper.get(url, timeout=10)
                 return response, True
             except Exception as e:
                 retries += 1
@@ -25,6 +29,11 @@ class PicazorClient:
                 else:
                     time.sleep(self.delay)
         return None, False
+
+    def _get_thread_scraper(self):
+        if not hasattr(self._thread_local, "scraper"):
+            self._thread_local.scraper = cloudscraper.create_scraper()
+        return self._thread_local.scraper
 
     def get_valid_indices_yield(self, base_url: str):
         """
@@ -79,6 +88,7 @@ class PicazorClient:
         """
         self.scraper = cloudscraper.create_scraper()
         self.delay = delay
+        self._thread_local = threading.local()
 
     # ---------------------------------------------------------
     # Descobre quantos posts realmente existem
@@ -97,14 +107,18 @@ class PicazorClient:
     # ---------------------------------------------------------
     # Retorna (media_url, media_type)
     # ---------------------------------------------------------
+    def get_media_info(self, url: str):
         response, success = self._fetch_url_with_retries(url)
         if not success or response is None:
             print(f"[Picazor] Error requesting {url}: failed after retries")
-            print(f"[Picazor] Error requesting {url}: {e}")
             return []
         if response.status_code != 200:
             return []
-        soup = BeautifulSoup(response.text, "html.parser")
+        try:
+            soup = BeautifulSoup(response.text, "html.parser")
+        except Exception as e:
+            print(f"[Picazor] Error parsing response at url {url}: {e}")
+            return []
         # Prioriza vídeo se existir, senão imagem
         video_src = None
         for video in soup.find_all("video"):
@@ -125,6 +139,73 @@ class PicazorClient:
         if image_src:
             return [(image_src, "image")]
         return []
+
+    def _check_index(self, normalized_base_url: str, index: int):
+        url = f"{normalized_base_url}/{index}"
+        scraper = self._get_thread_scraper()
+        response, success = self._fetch_url_with_retries(url, scraper=scraper)
+        if not success or response is None:
+            return index, "failure"
+        if response.status_code == 404:
+            return index, "not_found"
+        if response.status_code != 200:
+            return index, "skip"
+        try:
+            soup = BeautifulSoup(response.text, "html.parser")
+            if not self._has_media(soup):
+                return index, "no_media"
+        except Exception:
+            return index, "parse_error"
+        return index, "valid"
+
+    def get_valid_indices_multithread(self, base_url: str, num_threads: int = 6, batch_size: int = None, progress_callback=None):
+        normalized_base_url = base_url.rstrip('/')
+        found = []
+        consecutive_404 = 0
+        consecutive_failures = 0
+
+        if batch_size is None:
+            batch_size = max(num_threads * 5, 20)
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            i = 1
+            while True:
+                indices = list(range(i, i + batch_size))
+                results = {}
+                future_to_idx = {executor.submit(self._check_index, normalized_base_url, idx): idx for idx in indices}
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        _, status = future.result()
+                    except Exception:
+                        status = "failure"
+                    results[idx] = status
+
+                for idx in indices:
+                    status = results.get(idx, "failure")
+
+                    if status == "failure":
+                        consecutive_failures += 1
+                        if consecutive_failures >= 5:
+                            return found
+                    else:
+                        consecutive_failures = 0
+
+                    if status == "not_found":
+                        consecutive_404 += 1
+                        if consecutive_404 >= 10:
+                            return found
+                    else:
+                        consecutive_404 = 0
+
+                    if status == "valid":
+                        found.append(idx)
+                        if progress_callback:
+                            progress_callback(len(found))
+
+                i += batch_size
+                if self.delay:
+                    time.sleep(self.delay)
 
     # ---------------------------------------------------------
     # Verifica se a página contém mídia válida

@@ -8,6 +8,26 @@ from PySide6.QtCore import Qt
 
 
 class AppWindow(QMainWindow):
+    @staticmethod
+    def _validate_int_setting(value, default):
+        """Validate and convert value to int with fallback to default."""
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+    
+    @staticmethod
+    def _validate_float_setting(value, default):
+        """Validate and convert value to float with fallback to default."""
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+    
     def __init__(self):
         super().__init__()
         from PySide6.QtGui import QIcon
@@ -51,44 +71,86 @@ class AppWindow(QMainWindow):
 
         # Carregar estado salvo (checkboxes e link)
         try:
-            from config import load_ui_state
+            from config import (
+                load_ui_state,
+                PICAZOR_CHECK_THREADS_DEFAULT,
+                PICAZOR_CHECK_BATCH_DEFAULT,
+                PICAZOR_CHECK_DELAY_DEFAULT,
+            )
             state = load_ui_state()
+            if not isinstance(state, dict):
+                state = {}
+            
             # Restaurar checkboxes
             if hasattr(central_widget, 'checkboxes'):
-                for key, cb in central_widget.checkboxes.items():
-                    if key in state.get('checkboxes', {}):
-                        cb.setChecked(state['checkboxes'][key])
+                checkboxes_state = state.get('checkboxes', {})
+                if isinstance(checkboxes_state, dict):
+                    for key, cb in central_widget.checkboxes.items():
+                        if key in checkboxes_state:
+                            cb.setChecked(bool(checkboxes_state[key]))
+            
             # Restaurar link
-            if hasattr(central_widget, 'link_input') and 'last_link' in state:
-                central_widget.link_input.setText(state['last_link'])
+            if hasattr(central_widget, 'link_input'):
+                last_link = state.get('last_link', '')
+                if isinstance(last_link, str):
+                    central_widget.link_input.setText(last_link)
+            
+            # Restaurar settings do Picazor
+            picazor_state = state.get('picazor_settings', {})
+            if not isinstance(picazor_state, dict):
+                picazor_state = {}
+            
+            if hasattr(central_widget, 'picazor_threads_input'):
+                threads_value = self._validate_int_setting(
+                    picazor_state.get('threads'), 
+                    PICAZOR_CHECK_THREADS_DEFAULT
+                )
+                central_widget.picazor_threads_input.setValue(threads_value)
+            
+            if hasattr(central_widget, 'picazor_batch_input'):
+                batch_value = self._validate_int_setting(
+                    picazor_state.get('batch'), 
+                    PICAZOR_CHECK_BATCH_DEFAULT
+                )
+                central_widget.picazor_batch_input.setValue(batch_value)
+            
+            if hasattr(central_widget, 'picazor_delay_input'):
+                delay_value = self._validate_float_setting(
+                    picazor_state.get('delay'), 
+                    PICAZOR_CHECK_DELAY_DEFAULT
+                )
+                central_widget.picazor_delay_input.setValue(delay_value)
         except Exception as e:
             print(f"Erro ao restaurar estado da UI: {e}")
 
-    def closeEvent(self, event):
-        # Salvar estado das checkboxes e link
-        try:
-            from config import save_ui_state
-            central = self.centralWidget()
-            state = {
-                'checkboxes': {k: cb.isChecked() for k, cb in getattr(central, 'checkboxes', {}).items()},
-                'last_link': getattr(central, 'link_input', None).text() if hasattr(central, 'link_input') else ''
-            }
-            save_ui_state(state)
-        except Exception as e:
-            print(f"Erro ao salvar estado da UI: {e}")
-        super().closeEvent(event)
+def closeEvent(self, event):
+    # Salvar estado das checkboxes e link
+    try:
+        from config import save_ui_state
+        central = self.centralWidget()
+        picazor_settings = {}
+        if hasattr(central, 'picazor_threads_input'):
+            try:
+                picazor_settings['threads'] = int(central.picazor_threads_input.value())
+            except (ValueError, TypeError):
+                pass
+        if hasattr(central, 'picazor_batch_input'):
+            try:
+                picazor_settings['batch'] = int(central.picazor_batch_input.value())
+            except (ValueError, TypeError):
+                pass
+        if hasattr(central, 'picazor_delay_input'):
+            try:
+                picazor_settings['delay'] = float(central.picazor_delay_input.value())
+            except (ValueError, TypeError):
+                pass
 
-    def run(self):
-        pass
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        try:
-            central = self.centralWidget()
-            if not central or not hasattr(central, 'thumbnails_container'):
-                return
-            # Sempre refaz o layout das thumbnails ao redimensionar
-            central.thumbnails_columns = 5
-            reflow_thumbnails(central)
-        except Exception:
-            pass
+        state = {
+            'checkboxes': {k: cb.isChecked() for k, cb in getattr(central, 'checkboxes', {}).items()},
+            'last_link': getattr(central, 'link_input', None).text() if hasattr(central, 'link_input') else '',
+            'picazor_settings': picazor_settings,
+        }
+        save_ui_state(state)
+    except Exception as e:
+        print(f"Erro ao salvar estado da UI: {e}")
+    super().closeEvent(event)
