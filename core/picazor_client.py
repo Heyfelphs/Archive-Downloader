@@ -4,12 +4,74 @@ from bs4 import BeautifulSoup
 from re import compile
 import cloudscraper
 import time
-import threading
 
 
 class PicazorClient:
+    def _fetch_url_with_retries(self, url: str):
+        """
+        Tenta buscar uma URL com retries exponenciais.
+        Retorna (response, success) onde success indica se a requisição teve sucesso.
+        """
+        retries = 0
+        max_retries = 3
+        while retries < max_retries:
+            try:
+                response = self.scraper.get(url, timeout=10)
+                return response, True
+            except Exception as e:
+                retries += 1
+                if retries < max_retries:
+                    time.sleep(self.delay * (2 ** retries))
+                else:
+                    time.sleep(self.delay)
+        return None, False
+
     def get_valid_indices_yield(self, base_url: str):
-        pass
+        """
+        Gera índices válidos um a um, útil para feedback progressivo na UI.
+        """
+        normalized_base_url = base_url.rstrip('/')
+        consecutive_404 = 0
+        consecutive_failures = 0
+        i = 1
+        while True:
+            url = f"{normalized_base_url}/{i}"
+            response, success = self._fetch_url_with_retries(url)
+            if not success:
+                consecutive_failures += 1
+                if consecutive_failures >= 5:
+                    return
+                i += 1
+                time.sleep(self.delay)
+                continue
+            consecutive_failures = 0
+            if response.status_code == 404:
+                consecutive_404 += 1
+                if consecutive_404 >= 10:
+                    return
+                i += 1
+                time.sleep(self.delay)
+                continue
+            else:
+                consecutive_404 = 0
+            if response.status_code != 200:
+                i += 1
+                time.sleep(self.delay)
+                continue
+            try:
+                soup = BeautifulSoup(response.text, "html.parser")
+                if not self._has_media(soup):
+                    i += 1
+                    time.sleep(self.delay)
+                    continue
+            except Exception as e:
+                print(f"[Picazor] Error parsing response at index {i}: {e}")
+                i += 1
+                time.sleep(self.delay)
+                continue
+            yield i
+            i += 1
+            time.sleep(self.delay)
 
     def __init__(self, delay: float = 1.0):
         """
@@ -22,55 +84,10 @@ class PicazorClient:
     # Descobre quantos posts realmente existem
     # ---------------------------------------------------------
     def get_valid_indices(self, base_url: str):
-        consecutive_404 = 0
         found = []
-        i = 1
-        max_retries = 3
-        while True:
-            url = f"{base_url}/{i}"
-            print(f"[Picazor] Checking {url}")
-            retries = 0
-            while retries < max_retries:
-                try:
-                    response = self.scraper.get(url, timeout=10)
-                    break
-                except Exception as e:
-                    retries += 1
-                    if retries < max_retries:
-                        print(f"[Picazor] Error requesting {url}: {e} (retry {retries}/{max_retries})")
-                        time.sleep(self.delay * (2 ** retries))
-                    else:
-                        print(f"[Picazor] Error requesting {url}: {e} (max retries exceeded)")
-                        i += 1
-                        time.sleep(self.delay)
-                        continue
-            if retries >= max_retries:
-                continue
-            if response.status_code == 404:
-                consecutive_404 += 1
-                print(f"[Picazor] 404 at index {i} (consecutive: {consecutive_404})")
-                if consecutive_404 >= 10:
-                    print(f"[Picazor] Stopping: 10 consecutive 404s at index {i}")
-                    break
-                i += 1
-                time.sleep(self.delay)
-                continue
-            else:
-                consecutive_404 = 0
-            if response.status_code != 200:
-                print(f"[Picazor] Stop: status {response.status_code} at index {i}")
-                i += 1
-                time.sleep(self.delay)
-                continue
-            soup = BeautifulSoup(response.text, "html.parser")
-            if not self._has_media(soup):
-                print(f"[Picazor] Stop: no media at index {i}")
-                i += 1
-                time.sleep(self.delay)
-                continue
+        for i in self.get_valid_indices_yield(base_url):
             found.append(i)
-            i += 1
-            time.sleep(self.delay)
+            print(f"[Picazor] Found valid index: {i}")
         print(f"[Picazor] Total files found: {len(found)}")
         return found
 
@@ -80,10 +97,9 @@ class PicazorClient:
     # ---------------------------------------------------------
     # Retorna (media_url, media_type)
     # ---------------------------------------------------------
-    def get_media_info(self, url: str):
-        try:
-            response = self.scraper.get(url, timeout=10)
-        except Exception as e:
+        response, success = self._fetch_url_with_retries(url)
+        if not success or response is None:
+            print(f"[Picazor] Error requesting {url}: failed after retries")
             print(f"[Picazor] Error requesting {url}: {e}")
             return []
         if response.status_code != 200:

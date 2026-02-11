@@ -165,6 +165,7 @@ class DownloadWorker(QThread):
         self.total_files = total_files
         self.target_dir = target_dir
         self.valid_indices = valid_indices
+        self.processed_count = 0  # Rastreia arquivos processados (success + failed + skipped)
     
     def progress_callback(self, data):
         """Callback for progress updates from downloader."""
@@ -176,29 +177,39 @@ class DownloadWorker(QThread):
             })
         elif data["type"] == "file_complete":
             success_count = data.get("success", 0)
-            # Calculate percentage based on actual downloads
-            progress_percent = int((success_count / self.total_files) * 100) if self.total_files > 0 else 0
+            self.processed_count += 1
+            # Calculate percentage based on total processed files
+            progress_percent = int((self.processed_count / self.total_files) * 100) if self.total_files > 0 else 0
             self.progress_update.emit({
                 "type": "file_complete",
                 "filename": data["filename"],
                 "index": data["index"],
                 "count": success_count,
                 "total": self.total_files,
-                "percent": progress_percent
+                "percent": progress_percent,
+                "processed": self.processed_count
             })
         elif data["type"] == "file_skipped":
+            self.processed_count += 1
+            progress_percent = int((self.processed_count / self.total_files) * 100) if self.total_files > 0 else 0
             self.progress_update.emit({
                 "type": "file_skipped",
                 "index": data["index"],
-                "reason": data["reason"]
+                "reason": data["reason"],
+                "percent": progress_percent,
+                "processed": self.processed_count
             })
         elif data["type"] == "file_error":
+            self.processed_count += 1
+            progress_percent = int((self.processed_count / self.total_files) * 100) if self.total_files > 0 else 0
             self.progress_update.emit({
                 "type": "file_error",
                 "filename": data["filename"],
                 "error": data.get("error", ""),
                 "success": data.get("success", 0),
-                "failed": data.get("failed", 0)
+                "failed": data.get("failed", 0),
+                "percent": progress_percent,
+                "processed": self.processed_count
             })
         elif data["type"] == "summary":
             self.progress_update.emit({
@@ -518,7 +529,7 @@ def create_top_section(parent):
             parent.log_widget.clear()
         if hasattr(parent, "thumbnails_container"):
             parent.thumbnails_container.clear()
-        parent.thumbnails_container.columns = 4
+
         if not url:
             parent.labels["status"].setText("Status: URL vazia!")
             QMessageBox.warning(parent, "Link inválido", "Por favor, insira um link válido para continuar.")
@@ -538,7 +549,10 @@ def create_top_section(parent):
         worker.error.connect(lambda err: on_fetch_error(parent, err, checar_btn))
         # Atualiza label arquivos em tempo real para Picazor
         if "picazor.com" in url:
-            worker.progress.connect(lambda count: parent.labels["arquivos"].setText(f"Arquivos: {count}"))
+            def update_picazor_progress(count):
+                parent.labels["arquivos"].setVisible(True)
+                parent.labels["arquivos"].setText(f"Arquivos: {count}")
+            worker.progress.connect(update_picazor_progress)
         worker.start()
         parent.fetch_worker = worker  # Store reference to prevent garbage collection
     
@@ -726,13 +740,14 @@ def on_download_progress_update(parent, data):
         count = data.get("count", 0)
         total = data.get("total", 0)
         percent = data.get("percent", 0)
+        processed = data.get("processed", 0)
         filename = data['filename']
         
-        # Atualizar progress bar
-        parent.progress_bar.setValue(count)
+        # Atualizar progress bar usando processed_count para consistência
+        parent.progress_bar.setValue(processed)
         
         # Atualizar label de progresso
-        parent.progress_label.setText(f"{count} / {total} arquivos ({percent}%)")
+        parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
         
         # Atualizar label de arquivo
         parent.labels["arquivo"].setText(f"Arquivo: {filename}")
@@ -741,50 +756,46 @@ def on_download_progress_update(parent, data):
         add_log_message(parent.log_widget, f"✓ Concluído [{count}/{total}] {filename}")
         
         # Tentar adicionar thumbnail
-        # Construir caminho do arquivo baseado no padrão catalog/models/[model_name]/[filename]
+        # Usar o caminho completo do arquivo se fornecido, caso contrário construir
         model_path = getattr(parent, "current_download_dir", None)
         if model_path:
             file_path = Path(model_path) / filename
-            add_log_message(parent.log_widget, f"Tentando thumbnail: {file_path}")
             if file_path.exists():
-                add_log_message(parent.log_widget, f"Thumbnail encontrado: {file_path}")
                 add_thumbnail(parent, str(file_path))
             else:
-                add_log_message(parent.log_widget, f"Thumbnail não encontrado no caminho exato: {file_path}", warning=True)
-                # procura por arquivos com mesma extensão no diretório do modelo
+                # Tentar apenas no primeiro nível do diretório (sem recursão custosa)
+                found = False
                 try:
                     if Path(model_path).exists():
-                        found = False
-                        for p in Path(model_path).rglob(f"*{Path(filename).suffix}"):
-                            add_log_message(parent.log_widget, f"Procurando alternativa: {p}")
-                            if filename.split("_")[-1] in p.name or str(filename) == p.name:
-                                add_log_message(parent.log_widget, f"Alternativa encontrada: {p}")
+                        for p in Path(model_path).iterdir():
+                            if p.is_file() and p.name == filename:
                                 add_thumbnail(parent, str(p))
                                 found = True
                                 break
-                        if not found:
-                            add_log_message(parent.log_widget, "Nenhuma thumbnail encontrada no diretório do modelo.", warning=True)
-                except Exception as e:
-                    add_log_message(parent.log_widget, f"Erro ao procurar thumbnail: {e}", error=True)
+                except Exception:
+                    pass
     
     elif data["type"] == "file_skipped":
         # Arquivo não estava disponível
         index = data['index']
         reason = data.get('reason', 'indisponível')
         add_log_message(parent.log_widget, f"⊘ Pulado [{index}] {reason}", warning=True)
-        # (Removido: guardar arquivo pulado para análise manual)
-    
+        # Atualizar progress bar e label com base em arquivos processados do worker
+        processed = data.get("processed", 0)
+        percent = data.get("percent", 0)
+        parent.progress_bar.setValue(processed)
+        total = parent.progress_bar.maximum()
+        parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
     elif data["type"] == "file_error":
         # Erro ao baixar arquivo
         filename = data['filename']
         error = data.get('error', 'erro desconhecido')
-        # Increment progress bar and label even on error
-        current = parent.progress_bar.value() + 1
-        parent.progress_bar.setValue(current)
-        # Try to get total from label or progress bar
+        # Atualizar progress bar e label com base em arquivos processados do worker
+        processed = data.get("processed", 0)
+        percent = data.get("percent", 0)
+        parent.progress_bar.setValue(processed)
         total = parent.progress_bar.maximum()
-        percent = int((current / total) * 100) if total else 0
-        parent.progress_label.setText(f"{current} / {total} arquivos ({percent}%)")
+        parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
         # (Removido: guardar arquivo com erro para análise manual)
         parent.labels["status"].setText(f"Status: Erro ao baixar {filename}")
         add_log_message(parent.log_widget, f"✗ Erro em {filename}: {error}", error=True)
@@ -794,10 +805,15 @@ def on_download_progress_update(parent, data):
         success = data.get("success", 0)
         failed = data.get("failed", 0)
         skipped = data.get("skipped", 0)
+        # Manter um único significado para a barra: arquivos processados (baixados, falhados ou pulados)
+        processed = data.get("processed")
+        if processed is None:
+            processed = success + failed + skipped
+        if total > 0:
+            processed = min(processed, total)
+        parent.progress_bar.setValue(processed)
         
         # Atualizar labels com resumo
-        parent.progress_bar.setValue(success)
-        
         summary_msg = f"{success} / {total} arquivos baixados com sucesso"
         if failed > 0:
             summary_msg += f" ({failed} falharam"
@@ -821,8 +837,9 @@ def on_download_progress_update(parent, data):
 
 def on_download_complete(parent, checar_btn, download_btn):
     # Evitar execução duplicada
-    if getattr(parent, '_download_complete_called', False):
-        return
+    # Mensagem de confirmação com quantidade de arquivos baixados:
+    # usar, quando disponível, a contagem de sucessos (ex.: armazenada em parent.download_success_count)
+    arquivos = getattr(parent, "download_success_count", parent.progress_bar.value())
     parent._download_complete_called = True
     # Handle successful download completion.
     # Mensagem de confirmação com quantidade de arquivos baixados (usa valor da barra de progresso)
@@ -895,11 +912,23 @@ def add_thumbnail(parent, file_path):
     item.setData(Qt.UserRole, file_path)
     
     if ext in ['.mp4', '.avi', '.mov', '.mkv']:
-        # Use placeholder for video, generate thumbnail asynchronously
-        placeholder = _create_video_placeholder(thumb_size)
-        item.setIcon(QIcon(placeholder))
-        thumb_list.insertItem(0, item)
         
+        if not hasattr(parent, '_thumbnail_workers'):
+            parent._thumbnail_workers = []
+        parent._thumbnail_workers.append(thumbnail_worker)
+
+        def _cleanup_thumbnail_worker():
+            # Remove worker reference and schedule deletion to free resources
+            try:
+                if hasattr(parent, '_thumbnail_workers') and thumbnail_worker in parent._thumbnail_workers:
+                    parent._thumbnail_workers.remove(thumbnail_worker)
+            except ValueError:
+                # Worker already removed; ignore
+                pass
+            thumbnail_worker.deleteLater()
+
+        thumbnail_worker.finished.connect(_cleanup_thumbnail_worker)
+        thumbnail_worker.start()
         # Start worker thread to generate actual thumbnail
         thumbnail_worker = ThumbnailWorker(file_path, thumb_size)
         thumbnail_worker.thumbnail_ready.connect(
@@ -956,6 +985,8 @@ def reflow_thumbnails(parent):
 
 def add_log_message(log_widget, message, error=False, warning=False):
     """Adiciona mensagem ao log de atividades com tags e cor de linha para tipo de conteúdo."""
+    import html
+    
     # Remove mensagens de thumbnail
     if (
         message.startswith("Thumbnail encontrado:") or
@@ -986,8 +1017,11 @@ def add_log_message(log_widget, message, error=False, warning=False):
         tag = "[INFO]"
         color = "#AAAAAA"  # cinza
 
+    # Escape HTML content to prevent markup injection
+    escaped_message = html.escape(message)
+    
     # Linha inteira colorida
-    log_widget.append(f"<span style='color:{color};'><b>{tag}</b> {message}</span>")
+    log_widget.append(f"<span style='color:{color};'><b>{tag}</b> {escaped_message}</span>")
 
     # Auto-scroll to bottom
     scrollbar = log_widget.verticalScrollBar()
@@ -1135,6 +1169,7 @@ def create_right_panel():
 
 
 def create_bottom_section():
+    """Create the bottom section with progress bar, log area and thumbnails."""
     thumb_list = QListWidget()
     thumb_list.setViewMode(QListWidget.IconMode)
     thumb_list.setResizeMode(QListWidget.Adjust)
@@ -1164,7 +1199,6 @@ def create_bottom_section():
         thumb_list.setStyleSheet("QListWidget::item { margin: 0; padding: 0; }")
         thumb_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     QTimer.singleShot(100, set_fixed_thumb_grid)
-    """Create the bottom section with progress bar, log area and thumbnails."""
     bottom_widget = QFrame()
     bottom_widget.setStyleSheet("background-color: #1e1e1e;")
     layout = QVBoxLayout(bottom_widget)
