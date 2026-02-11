@@ -1,7 +1,8 @@
 # ui/window.py
 
 from PySide6.QtWidgets import QMainWindow, QApplication, QMessageBox
-from ui.widgets import build_ui, parse_supported_link
+from ui.widgets import build_ui
+from ui.link_utils import parse_supported_link
 from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QKeySequence
 
