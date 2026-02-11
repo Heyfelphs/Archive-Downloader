@@ -1,3 +1,7 @@
+requests
+bs4
+cloudscraper
+cv2
 PySide6
 requests
 bs4
