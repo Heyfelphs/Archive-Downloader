@@ -20,6 +20,8 @@ def picazor_download_orchestrator(
     valid_indices=None,
     link_check_batch: int = None,
     link_check_delay: float = None,
+    download_images: bool = True,
+    download_videos: bool = True,
 ):
     if workers is None:
         workers = PICAZOR_CHECK_THREADS_DEFAULT
@@ -48,13 +50,19 @@ def picazor_download_orchestrator(
         )
         post_urls = [f"{base_url}/{i}" for i in valid_indices_mt]
         valid_indices = valid_indices_mt
+    def should_download(media_type: str) -> bool:
+        if media_type == "video":
+            return download_videos
+        return download_images
+
     # Pre-calculate total files to download for accurate progress tracking
     total_files = 0
     media_lists = {}
     for post_url in post_urls:
         media_list = client.get_media_info(post_url)
-        media_lists[post_url] = media_list
-        total_files += len(media_list)
+        filtered_media_list = [item for item in media_list if should_download(item[1])]
+        media_lists[post_url] = filtered_media_list
+        total_files += len(filtered_media_list)
     
     files_downloaded = 0
 
