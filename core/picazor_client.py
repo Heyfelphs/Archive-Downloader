@@ -7,15 +7,54 @@ import time
 
 
 class PicazorClient:
+    import threading
+    def get_valid_indices_multithread(self, base_url: str, num_threads: int = 8):
+        from utils.threading import ThreadPool
+        consecutive_404 = 0
+        found = []
+        lock = threading.Lock()
+        stop_event = threading.Event()
+        indices = []
+        def check_page(i):
+            if stop_event.is_set():
+                return
+            url = f"{base_url}/{i}"
+            response = self.scraper.get(url)
+            if response.status_code == 404:
+                with lock:
+                    nonlocal consecutive_404
+                    consecutive_404 += 1
+                    if consecutive_404 >= 10:
+                        stop_event.set()
+                return
+            else:
+                with lock:
+                    consecutive_404 = 0
+            if response.status_code != 200:
+                return
+            soup = BeautifulSoup(response.text, "html.parser")
+            if not self._has_media(soup):
+                return
+            with lock:
+                found.append(i)
 
-    def __init__(self, delay: float = 1.0, max_check: int = 500):
+        pool = ThreadPool(num_threads)
+        pool.start()
+        i = 1
+        while not stop_event.is_set():
+            pool.add_task(check_page, i)
+            i += 1
+        pool.wait_completion()
+        found.sort()
+        print(f"[Picazor] Total files found: {len(found)}")
+        return found
+
+    def __init__(self, delay: float = 1.0):
         """
         :param delay: tempo entre requisições
-        :param max_check: limite máximo de páginas a testar
         """
         self.scraper = cloudscraper.create_scraper()
         self.delay = delay
-        self.max_check = max_check
 
     # ---------------------------------------------------------
     # Descobre quantos posts realmente existem
@@ -23,7 +62,8 @@ class PicazorClient:
     def get_valid_indices(self, base_url: str):
         consecutive_404 = 0
         found = []
-        for i in range(1, self.max_check + 1):
+        i = 1
+        while True:
             url = f"{base_url}/{i}"
             print(f"[Picazor] Checking {url}")
             response = self.scraper.get(url)
@@ -33,17 +73,21 @@ class PicazorClient:
                 if consecutive_404 >= 10:
                     print(f"[Picazor] Stopping: 10 consecutive 404s at index {i}")
                     break
+                i += 1
                 continue
             else:
                 consecutive_404 = 0
             if response.status_code != 200:
                 print(f"[Picazor] Stop: status {response.status_code} at index {i}")
+                i += 1
                 continue
             soup = BeautifulSoup(response.text, "html.parser")
             if not self._has_media(soup):
                 print(f"[Picazor] Stop: no media at index {i}")
+                i += 1
                 continue
             found.append(i)
+            i += 1
         print(f"[Picazor] Total files found: {len(found)}")
         return found
 

@@ -19,7 +19,9 @@ def picazor_download_orchestrator(url: str, target_dir: str, workers: int = 6, p
     if valid_indices is not None:
         post_urls = [f"{url}/{i}" for i in valid_indices]
     else:
-        post_urls = client.generate_post_urls(url)
+        # Usa multithread para checagem rápida dos índices válidos
+        valid_indices_mt = client.get_valid_indices_multithread(url, num_threads=workers)
+        post_urls = [f"{url}/{i}" for i in valid_indices_mt]
     total = len(post_urls)
 
     for idx, post_url in enumerate(post_urls, 1):
