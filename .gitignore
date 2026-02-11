@@ -1,0 +1,11 @@
+__pycache__/app.cpython-313.pyc
+__pycache__/config.cpython-313.pyc
+core/__pycache__/downloader_progress.cpython-313.pyc
+core/__pycache__/fapello_client.cpython-313.pyc
+core/__pycache__/picazor_client.cpython-313.pyc
+core/__pycache__/picazor_downloader.cpython-313.pyc
+core/__pycache__/worker.cpython-313.pyc
+ui/__pycache__/widgets.cpython-313.pyc
+ui/__pycache__/window.cpython-313.pyc
+utils/__pycache__/filesystem.cpython-313.pyc
+utils/__pycache__/network.cpython-313.pyc
