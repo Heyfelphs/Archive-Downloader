@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QCheckBox, QPushButton, QListWidget, QListWidgetItem,
     QFrame, QProgressBar, QTextEdit, QFileDialog,
     QSpinBox, QDoubleSpinBox, QMessageBox
@@ -9,6 +9,7 @@ from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices, QColor, QPain
 from pathlib import Path
 import os
 import html
+from urllib.parse import urlparse
 from config import (
     APP_NAME_COLOR,
     PICAZOR_CHECK_THREADS_DEFAULT,
@@ -17,6 +18,63 @@ from config import (
 )
 from core.fapello_client import get_total_files as get_fapello_total_files
 from core.downloader_progress import download_orchestrator_with_progress
+
+
+SUPPORTED_SITES = {
+    "Fapello": "https://fapello.com",
+    "Picazor": "https://picazor.com",
+}
+
+
+def parse_supported_link(text: str):
+    value = text.strip()
+    if not value or not value.startswith(("http://", "https://")):
+        return None
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return None
+    host = parsed.netloc.lower()
+    if "fapello.com" in host:
+        site_label = "Fapello"
+    elif "picazor.com" in host:
+        site_label = "Picazor"
+    else:
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if not parts:
+        return None
+    if site_label == "Picazor" and parts[0].lower() == "pt" and len(parts) > 1:
+        return site_label, parts[1]
+    return site_label, parts[0]
+
+
+def build_url(site_label: str, model_text: str):
+    if not model_text:
+        return ""
+    parsed = parse_supported_link(model_text)
+    if parsed:
+        site_label, model_text = parsed
+    base = SUPPORTED_SITES.get(site_label, "")
+    if not base:
+        return ""
+    model_text = model_text.strip().strip("/")
+    if not model_text:
+        return ""
+    if site_label == "Picazor":
+        return f"{base}/pt/{model_text}/"
+    return f"{base}/{model_text}/"
+
+
+def normalize_site_model(site_combo, model_input):
+    raw = model_input.text().strip()
+    parsed = parse_supported_link(raw)
+    if parsed:
+        site_label, model = parsed
+        site_combo.setCurrentText(site_label)
+        model_input.setText(model)
+        return site_label, model
+    return site_combo.currentText(), raw
 
 
 class FetchWorker(QThread):
@@ -250,7 +308,7 @@ def build_ui(parent):
     main_layout.setSpacing(0)
     
     # Top section with link input and buttons
-    top_section, link_input = create_top_section(central_widget)
+    top_section, site_combo, model_input = create_top_section(central_widget)
     main_layout.addWidget(top_section)
     
     # Painel central dividido: esquerda (opções/status/log) e direita (preview)
@@ -359,7 +417,8 @@ def build_ui(parent):
     main_layout.addWidget(center_panel, 1)
 
     # Store references for later access
-    central_widget.link_input = link_input
+    central_widget.site_combo = site_combo
+    central_widget.model_input = model_input
     central_widget.labels = labels_dict
     central_widget.checkboxes = checkboxes_dict
     central_widget.progress_bar = progress_bar
@@ -373,6 +432,16 @@ def build_ui(parent):
         central_widget.picazor_batch_input = left_panel.picazor_batch_input
     if hasattr(left_panel, "picazor_delay_input"):
         central_widget.picazor_delay_input = left_panel.picazor_delay_input
+    if hasattr(left_panel, "picazor_container"):
+        central_widget.picazor_container = left_panel.picazor_container
+
+    # Conectar mudança de site para mostrar/esconder controles Picazor
+    def on_site_changed(index):
+        if hasattr(central_widget, "picazor_container"):
+            is_picazor = site_combo.currentText() == "Picazor"
+            central_widget.picazor_container.setVisible(is_picazor)
+
+    site_combo.currentIndexChanged.connect(on_site_changed)
     # default number of columns for thumbnails grid (fixo em 4)
     central_widget.thumbnails_columns = 4
     # limit how many thumbnails are kept in the grid
@@ -392,15 +461,25 @@ def create_top_section(parent):
     layout.setContentsMargins(15, 10, 15, 10)
     layout.setSpacing(10)
     
-    # Link label
-    link_label = QLabel("Link:")
-    link_label.setStyleSheet("color: #ffffff; font-weight: bold;")
-    layout.addWidget(link_label)
-    
-    # Link input
-    link_input = QLineEdit()
-    link_input.setPlaceholderText("https://fapello.com/...")
-    link_input.setStyleSheet("""
+    # Site label and dropdown
+    site_label = QLabel("Site:")
+    site_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+    layout.addWidget(site_label)
+
+    site_combo = QComboBox()
+    site_combo.addItems(list(SUPPORTED_SITES.keys()))
+    site_combo.setMinimumHeight(32)
+    site_combo.setMinimumWidth(120)
+    layout.addWidget(site_combo)
+
+    # Model label and input
+    model_label = QLabel("Modelo:")
+    model_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+    layout.addWidget(model_label)
+
+    model_input = QLineEdit()
+    model_input.setPlaceholderText("coco20002 ou link completo")
+    model_input.setStyleSheet("""
         QLineEdit {
             background-color: #2d2d2d;
             color: #ffffff;
@@ -409,8 +488,8 @@ def create_top_section(parent):
             border-radius: 3px;
         }
     """)
-    link_input.setMinimumHeight(32)
-    layout.addWidget(link_input, 1)
+    model_input.setMinimumHeight(32)
+    layout.addWidget(model_input, 1)
     
     # Checar button - starts disabled
     checar_btn = QPushButton("Checar")
@@ -438,7 +517,7 @@ def create_top_section(parent):
         }
     """)
     checar_btn.parent_widget = parent
-    checar_btn.link_input = link_input
+    checar_btn.model_input = model_input
     layout.addWidget(checar_btn)
     
     # Download button - starts disabled and hidden
@@ -503,7 +582,7 @@ def create_top_section(parent):
     
     # Connect link input to enable/disable checar button
     def on_link_changed():
-        has_text = len(link_input.text().strip()) > 0
+        has_text = len(model_input.text().strip()) > 0
         checar_btn.setEnabled(has_text)
         # Reset download button when link changes
         if has_text:
@@ -511,13 +590,17 @@ def create_top_section(parent):
             download_btn.setEnabled(False)
         if hasattr(parent, "open_folder_btn"):
             parent.open_folder_btn.setEnabled(False)
+        # Esconder label destino quando novo link é inserido
+        if hasattr(parent, "labels") and "destino" in parent.labels:
+            parent.labels["destino"].setVisible(False)
         parent._download_complete_called = False
     
-    link_input.textChanged.connect(on_link_changed)
+    model_input.textChanged.connect(on_link_changed)
     
     # Connect checar button to fetch function
     def on_checar_clicked():
-        url = link_input.text().strip()
+        site_label, model_name = normalize_site_model(site_combo, model_input)
+        url = build_url(site_label, model_name)
         # Limpa painel de log e thumbnails ao clicar em checar
         if hasattr(parent, "log_widget"):
             parent.log_widget.clear()
@@ -527,7 +610,7 @@ def create_top_section(parent):
         if not url:
             parent.labels["status"].setText("Status: URL vazia!")
             QMessageBox.warning(parent, "Link inválido", "Por favor, insira um link válido para continuar.")
-            link_input.setFocus()
+            model_input.setFocus()
             return
 
         # Log message
@@ -562,7 +645,8 @@ def create_top_section(parent):
     
     # Connect download button to download function
     def on_download_clicked():
-        url = link_input.text().strip()
+        site_label, model_name = normalize_site_model(site_combo, model_input)
+        url = build_url(site_label, model_name)
         if not url:
             parent.labels["status"].setText("Status: URL vazia!")
             return
@@ -613,6 +697,7 @@ def create_top_section(parent):
         parent.last_download_dir = target_dir
         if hasattr(parent, "labels") and "destino" in parent.labels:
             parent.labels["destino"].setText(f"Destino: {target_dir}")
+            parent.labels["destino"].setVisible(True)
         add_log_message(parent.log_widget, f"Destino escolhido: {target_dir}")
         
         # Get total files from label
@@ -697,7 +782,7 @@ def create_top_section(parent):
 
     open_folder_btn.clicked.connect(on_open_folder_clicked)
     
-    return top_widget, link_input
+    return top_widget, site_combo, model_input
 
 
 def on_fetch_complete(parent, data, checar_btn, download_btn):
@@ -708,7 +793,9 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
     parent.labels["status"].setText("Status: Pronto")
     
     # Atualiza label arquivos para Picazor
-    url = parent.link_input.text().strip() if hasattr(parent, 'link_input') else ""
+    url = ""
+    if hasattr(parent, 'site_combo') and hasattr(parent, 'model_input'):
+        url = build_url(parent.site_combo.currentText(), parent.model_input.text().strip())
     if "picazor.com" in url:
         # Para Picazor, data['total'] é o número de índices/páginas, não de arquivos reais
         # O total real será recebido no 'summary' durante o download
@@ -1073,6 +1160,12 @@ def create_left_panel():
     baixar_videos.setStyleSheet(checkbox_style)
     layout.addWidget(baixar_videos)
 
+    # Container para Picazor settings (será mostrado/escondido conforme site selecionado)
+    picazor_container = QWidget()
+    picazor_layout = QVBoxLayout(picazor_container)
+    picazor_layout.setContentsMargins(0, 0, 0, 0)
+    picazor_layout.setSpacing(10)
+
     # Picazor settings
     info_style = "color: #ffffff; font-size: 11px;"
     spin_style = """
@@ -1088,7 +1181,7 @@ def create_left_panel():
     picazor_title = QLabel("Picazor (checagem)")
     picazor_title.setStyleSheet(info_style)
     picazor_title.setToolTip("Ajustes usados apenas na checagem de links do Picazor")
-    layout.addWidget(picazor_title)
+    picazor_layout.addWidget(picazor_title)
 
     threads_layout = QHBoxLayout()
     threads_label = QLabel("Threads:")
@@ -1100,7 +1193,7 @@ def create_left_panel():
     picazor_threads_input.setToolTip("Número de threads na checagem de links do Picazor")
     threads_layout.addWidget(threads_label)
     threads_layout.addWidget(picazor_threads_input)
-    layout.addLayout(threads_layout)
+    picazor_layout.addLayout(threads_layout)
 
     batch_layout = QHBoxLayout()
     batch_label = QLabel("Lote:")
@@ -1112,7 +1205,7 @@ def create_left_panel():
     picazor_batch_input.setToolTip("Quantidade de índices por rodada de checagem")
     batch_layout.addWidget(batch_label)
     batch_layout.addWidget(picazor_batch_input)
-    layout.addLayout(batch_layout)
+    picazor_layout.addLayout(batch_layout)
 
     delay_layout = QHBoxLayout()
     delay_label = QLabel("Delay (s):")
@@ -1126,7 +1219,11 @@ def create_left_panel():
     picazor_delay_input.setToolTip("Delay entre rodadas de checagem (segundos)")
     delay_layout.addWidget(delay_label)
     delay_layout.addWidget(picazor_delay_input)
-    layout.addLayout(delay_layout)
+    picazor_layout.addLayout(delay_layout)
+
+    # Inicialmente escondido
+    picazor_container.setVisible(False)
+    layout.addWidget(picazor_container)
 
     # Info labels
     
@@ -1140,6 +1237,7 @@ def create_left_panel():
 
     destino_label = QLabel("Destino: -")
     destino_label.setStyleSheet(info_style)
+    destino_label.setVisible(False)
     layout.addWidget(destino_label)
     
 
@@ -1183,6 +1281,7 @@ def create_left_panel():
     left_widget.picazor_threads_input = picazor_threads_input
     left_widget.picazor_batch_input = picazor_batch_input
     left_widget.picazor_delay_input = picazor_delay_input
+    left_widget.picazor_container = picazor_container
     return left_widget, labels_dict, checkboxes_dict
 
 

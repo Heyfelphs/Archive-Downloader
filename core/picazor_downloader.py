@@ -55,19 +55,11 @@ def picazor_download_orchestrator(
             return download_videos
         return download_images
 
-    # Pre-calculate total files to download for accurate progress tracking
-    total_files = 0
-    media_lists = {}
-    for post_url in post_urls:
-        media_list = client.get_media_info(post_url)
-        filtered_media_list = [item for item in media_list if should_download(item[1])]
-        media_lists[post_url] = filtered_media_list
-        total_files += len(filtered_media_list)
-    
     files_downloaded = 0
 
     for idx, post_url in enumerate(post_urls, 1):
-        media_list = media_lists[post_url]
+        media_list = client.get_media_info(post_url)
+        media_list = [item for item in media_list if should_download(item[1])]
         # Determina o número real da página
         if valid_indices is not None:
             page_number = valid_indices[idx-1]
@@ -78,7 +70,6 @@ def picazor_download_orchestrator(
             except Exception:
                 page_number = idx
         for m_idx, (file_url, media_type) in enumerate(media_list):
-            files_downloaded += 1
             # Corrige URLs relativas para absolutas
             if file_url and file_url.startswith("/"):
                 file_url = "https://picazor.com" + file_url
@@ -97,17 +88,16 @@ def picazor_download_orchestrator(
                         "type": "file_complete",
                         "filename": filename,
                         "index": page_number,
-                        "success": files_downloaded,
-                        "total": total_files
+                        "success": files_downloaded + 1
                     })
+                files_downloaded += 1
             except Exception as e:
                 if progress_callback:
                     progress_callback({
                         "type": "file_error",
                         "filename": filename,
                         "error": str(e),
-                        "index": page_number,
-                        "total": total_files
+                        "index": page_number
                     })
     if progress_callback:
         progress_callback({

@@ -1,8 +1,9 @@
 # ui/window.py
 
-from PySide6.QtWidgets import QMainWindow
-from ui.widgets import build_ui
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMainWindow, QApplication, QMessageBox
+from ui.widgets import build_ui, parse_supported_link
+from PySide6.QtCore import Qt, QEvent
+from PySide6.QtGui import QKeySequence
 
 
 class AppWindow(QMainWindow):
@@ -53,6 +54,13 @@ class AppWindow(QMainWindow):
                 padding: 5px;
                 border-radius: 3px;
             }
+            QComboBox {
+                background-color: #2d2d2d;
+                color: #ffffff;
+                border: 1px solid #555;
+                padding: 4px 6px;
+                border-radius: 3px;
+            }
             QCheckBox {
                 color: #ffffff;
             }
@@ -66,6 +74,9 @@ class AppWindow(QMainWindow):
         # Build UI
         central_widget = build_ui(self)
         self.setCentralWidget(central_widget)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         # Carregar estado salvo (checkboxes e link)
         try:
@@ -87,11 +98,26 @@ class AppWindow(QMainWindow):
                         if key in checkboxes_state:
                             cb.setChecked(bool(checkboxes_state[key]))
             
-            # Restaurar link
-            if hasattr(central_widget, 'link_input'):
-                last_link = state.get('last_link', '')
-                if isinstance(last_link, str):
-                    central_widget.link_input.setText(last_link)
+            # Restaurar site/modelo
+            last_site = state.get('last_site', '')
+            last_model = state.get('last_model', '')
+            if hasattr(central_widget, 'site_combo') and isinstance(last_site, str):
+                if last_site in [central_widget.site_combo.itemText(i) for i in range(central_widget.site_combo.count())]:
+                    central_widget.site_combo.setCurrentText(last_site)
+            if hasattr(central_widget, 'model_input'):
+                if isinstance(last_model, str) and last_model:
+                    central_widget.model_input.setText(last_model)
+                else:
+                    last_link = state.get('last_link', '')
+                    if isinstance(last_link, str) and last_link:
+                        parsed = parse_supported_link(last_link)
+                        if parsed:
+                            site_label, model = parsed
+                            if hasattr(central_widget, 'site_combo'):
+                                central_widget.site_combo.setCurrentText(site_label)
+                            central_widget.model_input.setText(model)
+                        else:
+                            central_widget.model_input.setText(last_link)
             
             # Restaurar settings do Picazor
             picazor_state = state.get('picazor_settings', {})
@@ -145,10 +171,40 @@ class AppWindow(QMainWindow):
 
             state = {
                 'checkboxes': {k: cb.isChecked() for k, cb in getattr(central, 'checkboxes', {}).items()},
-                'last_link': getattr(central, 'link_input', None).text() if hasattr(central, 'link_input') else '',
+                'last_site': getattr(central, 'site_combo', None).currentText() if hasattr(central, 'site_combo') else '',
+                'last_model': getattr(central, 'model_input', None).text() if hasattr(central, 'model_input') else '',
                 'picazor_settings': picazor_settings,
             }
             save_ui_state(state)
         except Exception as e:
             print(f"Erro ao salvar estado da UI: {e}")
         super().closeEvent(event)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress:
+            if event.matches(QKeySequence.Paste) or (
+                event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier
+            ):
+                text = QApplication.clipboard().text()
+                parsed = parse_supported_link(text)
+                if parsed:
+                    site_label, model = parsed
+                    return self._confirm_paste_link(site_label, model)
+        return super().eventFilter(obj, event)
+
+    def _confirm_paste_link(self, site_label: str, model: str) -> bool:
+        central = self.centralWidget()
+        if not hasattr(central, 'site_combo') or not hasattr(central, 'model_input'):
+            return False
+        message = f"Detectei um link do {site_label}. Deseja preencher automaticamente?"
+        result = QMessageBox.question(
+            self,
+            "Link detectado",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if result == QMessageBox.Yes:
+            central.site_combo.setCurrentText(site_label)
+            central.model_input.setText(model)
+            return True
+        return False

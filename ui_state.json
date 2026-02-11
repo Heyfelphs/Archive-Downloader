@@ -3,7 +3,8 @@
     "imagens": true,
     "videos": true
   },
-  "last_link": "https://picazor.com/pt/kira-pregiato-1",
+  "last_site": "Picazor",
+  "last_model": "soraya-upaiprom",
   "picazor_settings": {
     "threads": 6,
     "batch": 30,
