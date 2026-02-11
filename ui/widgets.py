@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtCore import QTimer, QUrl
-from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices
+from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices, QColor, QPainter
 from datetime import datetime
 from config import APP_NAME, VERSION, APP_NAME_COLOR
 from core.fapello_client import get_total_files as get_fapello_total_files
@@ -59,6 +59,7 @@ class FetchWorker(QThread):
     """Worker thread para buscar informações sem bloquear a UI."""
     finished = Signal(dict)
     error = Signal(str)
+    progress = Signal(int)  # Novo sinal para progresso de arquivos válidos
     
     def __init__(self, url: str):
         super().__init__()
@@ -74,7 +75,10 @@ class FetchWorker(QThread):
                 print("[FetchWorker] Detected Picazor link. Starting analysis...")
                 from core.picazor_client import PicazorClient
                 client = PicazorClient()
-                valid_indices = client.get_valid_indices(self.url)
+                valid_indices = []
+                for idx in client.get_valid_indices_yield(self.url):
+                    valid_indices.append(idx)
+                    self.progress.emit(len(valid_indices))
                 total_files = len(valid_indices)
                 print(f"[FetchWorker] Media found: {total_files} files")
             else:
@@ -95,6 +99,56 @@ class FetchWorker(QThread):
             })
         except Exception as e:
             self.error.emit(f"Erro ao buscar: {str(e)}")
+
+
+class ThumbnailWorker(QThread):
+    """Worker thread para gerar thumbnails de vídeos sem bloquear a UI."""
+    thumbnail_ready = Signal(str, QIcon)  # file_path, icon
+    
+    def __init__(self, file_path: str, thumb_size: int = 220):
+        super().__init__()
+        self.file_path = file_path
+        self.thumb_size = thumb_size
+    
+    def run(self):
+        try:
+            import cv2
+            cap = cv2.VideoCapture(self.file_path)
+            ret, frame = cap.read()
+            cap.release()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                from PySide6.QtGui import QImage
+                height, width, channel = frame.shape
+                bytes_per_line = channel * width
+                qimg = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
+                pix = QPixmap.fromImage(qimg)
+            else:
+                pix = self._create_video_placeholder()
+        except Exception:
+            pix = self._create_video_placeholder()
+        
+        if pix.isNull():
+            pix = self._create_video_placeholder()
+        
+        # Crop to square
+        side = min(pix.width(), pix.height())
+        x = (pix.width() - side) // 2
+        y = (pix.height() - side) // 2
+        pix = pix.copy(x, y, side, side)
+        pix = pix.scaled(self.thumb_size, self.thumb_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        self.thumbnail_ready.emit(self.file_path, QIcon(pix))
+    
+    def _create_video_placeholder(self):
+        """Create a placeholder pixmap for videos."""
+        pix = QPixmap(self.thumb_size, self.thumb_size)
+        pix.fill(QColor("#1a1a1a"))
+        painter = QPainter(pix)
+        painter.setPen(QColor("#666666"))
+        painter.setFont(QFont("Arial", 10))
+        painter.drawText(pix.rect(), Qt.AlignCenter, "▶\nVIDEO")
+        painter.end()
+        return pix
 
 
 class DownloadWorker(QThread):
@@ -287,7 +341,7 @@ def build_ui(parent):
     thumb_size = 220  # Aumenta tamanho
     thumbnails_container.setIconSize(QSize(thumb_size, thumb_size))
     thumbnails_container.setGridSize(QSize(thumb_size, thumb_size))
-    thumbnails_container.setStyleSheet("background-color: #181818; border: 1px solid #444; border-radius: 3px; QLIstWidget::item { margin: 0; padding: 0; }")
+    thumbnails_container.setStyleSheet("background-color: #181818; border: 1px solid #444; border-radius: 3px; QListWidget::item { margin: 0; padding: 0; }")
     thumbnails_container.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     def set_fixed_thumb_grid():
         try:
@@ -482,6 +536,9 @@ def create_top_section(parent):
         worker = FetchWorker(url)
         worker.finished.connect(lambda data: on_fetch_complete(parent, data, checar_btn, download_btn))
         worker.error.connect(lambda err: on_fetch_error(parent, err, checar_btn))
+        # Atualiza label arquivos em tempo real para Picazor
+        if "picazor.com" in url:
+            worker.progress.connect(lambda count: parent.labels["arquivos"].setText(f"Arquivos: {count}"))
         worker.start()
         parent.fetch_worker = worker  # Store reference to prevent garbage collection
     
@@ -559,14 +616,7 @@ def create_top_section(parent):
         add_log_message(parent.log_widget, f"Destino: {target_dir}")
         
         # Limpar thumbnails anteriores
-        flow_widget = parent.thumbnails_container
-        flow_layout = flow_widget.layout()
-        if flow_layout:
-            # Remove all widgets except the stretch
-            while flow_layout.count() > 0:
-                item = flow_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
+        parent.thumbnails_container.clear()
         
         # Disable download button during download
         download_btn.setEnabled(False)
@@ -618,11 +668,20 @@ def create_top_section(parent):
 
 def on_fetch_complete(parent, data, checar_btn, download_btn):
     """Handle successful fetch."""
+
     parent.labels["total"].setText(f"Total: {data['total']}")
     parent.labels["pasta"].setText(f"Pasta: {data['pasta']}")
     parent.labels["status"].setText("Status: Pronto")
     parent.progress_bar.setMaximum(data['total'])
     parent.progress_label.setText(f"0 / {data['total']} arquivos (0%)")
+
+    # Atualiza label arquivos para Picazor
+    url = parent.link_input.text().strip() if hasattr(parent, 'link_input') else ""
+    if "picazor.com" in url:
+        parent.labels["arquivos"].setVisible(True)
+        parent.labels["arquivos"].setText(f"Arquivos: {data['total']}")
+    else:
+        parent.labels["arquivos"].setVisible(False)
 
     if data['total'] == 0:
         QMessageBox.warning(parent, "Link inválido ou não validado", "O link informado não é válido ou não pôde ser validado. Por favor, insira um link válido.")
@@ -653,8 +712,8 @@ def on_fetch_error(parent, error, checar_btn):
 
 
 def on_download_progress_update(parent, data):
-    # (Removido: salvar summary para análise manual)
     """Handle detailed download progress updates."""
+    # (Removido: salvar summary para análise manual)
     if data["type"] == "file_start":
         # Arquivo iniciou o download
         filename = data['filename']
@@ -731,7 +790,6 @@ def on_download_progress_update(parent, data):
         add_log_message(parent.log_widget, f"✗ Erro em {filename}: {error}", error=True)
     
     elif data["type"] == "summary":
-        # Resumo final do download
         total = data.get("total_expected", 0)
         success = data.get("success", 0)
         failed = data.get("failed", 0)
@@ -766,7 +824,7 @@ def on_download_complete(parent, checar_btn, download_btn):
     if getattr(parent, '_download_complete_called', False):
         return
     parent._download_complete_called = True
-    """Handle successful download completion."""
+    # Handle successful download completion.
     # Mensagem de confirmação com quantidade de arquivos baixados (usa valor da barra de progresso)
     arquivos = parent.progress_bar.value()
     msg = f"✓ DOWNLOAD CONCLUÍDO! Arquivos baixados: {arquivos}"
@@ -782,6 +840,9 @@ def on_download_complete(parent, checar_btn, download_btn):
     dlg.setIcon(QMessageBox.Information)
     dlg.setStandardButtons(QMessageBox.Ok)
     dlg.setModal(False)
+    # Manter uma referência persistente para evitar coleta de lixo prematura
+    parent._download_complete_msgbox = dlg
+    dlg.finished.connect(lambda _: setattr(parent, '_download_complete_msgbox', None))
     dlg.show()
     # (Removido: lógica de análise manual ao concluir download)
 
@@ -828,41 +889,62 @@ def add_thumbnail(parent, file_path):
     thumb_list = parent.thumb_list if hasattr(parent, 'thumb_list') else parent.thumbnails_container
     thumb_size = 220
     ext = os.path.splitext(file_path)[1].lower()
-    if ext in ['.mp4', '.avi', '.mov', '.mkv']:
-        # Thumbnail para vídeo: usa QPixmap de um ícone de vídeo ou frame
-        try:
-            import cv2
-            cap = cv2.VideoCapture(file_path)
-            ret, frame = cap.read()
-            cap.release()
-            if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                from PySide6.QtGui import QImage
-                height, width, channel = frame.shape
-                bytes_per_line = channel * width
-                qimg = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
-                pix = QPixmap.fromImage(qimg)
-            else:
-                pix = QPixmap(thumb_size, thumb_size)
-                pix.fill(Qt.black)
-        except Exception:
-            pix = QPixmap(thumb_size, thumb_size)
-            pix.fill(Qt.black)
-    else:
-        pix = QPixmap(file_path)
-    if pix.isNull():
-        pix = QPixmap(thumb_size, thumb_size)
-        pix.fill(Qt.darkGray)
+    
     item = QListWidgetItem()
     item.setSizeHint(QSize(thumb_size, thumb_size))
-    side = min(pix.width(), pix.height())
-    x = (pix.width() - side) // 2
-    y = (pix.height() - side) // 2
-    pix = pix.copy(x, y, side, side)
-    pix = pix.scaled(thumb_size, thumb_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    item.setIcon(QIcon(pix))
     item.setData(Qt.UserRole, file_path)
-    thumb_list.insertItem(0, item)
+    
+    if ext in ['.mp4', '.avi', '.mov', '.mkv']:
+        # Use placeholder for video, generate thumbnail asynchronously
+        placeholder = _create_video_placeholder(thumb_size)
+        item.setIcon(QIcon(placeholder))
+        thumb_list.insertItem(0, item)
+        
+        # Start worker thread to generate actual thumbnail
+        thumbnail_worker = ThumbnailWorker(file_path, thumb_size)
+        thumbnail_worker.thumbnail_ready.connect(
+            lambda fp, icon: _update_thumbnail_icon(thumb_list, fp, icon)
+        )
+        thumbnail_worker.start()
+        
+        if not hasattr(parent, '_thumbnail_workers'):
+            parent._thumbnail_workers = []
+        parent._thumbnail_workers.append(thumbnail_worker)
+    else:
+        # Image: load directly
+        pix = QPixmap(file_path)
+        if pix.isNull():
+            pix = QPixmap(thumb_size, thumb_size)
+            pix.fill(Qt.darkGray)
+        
+        side = min(pix.width(), pix.height())
+        x = (pix.width() - side) // 2
+        y = (pix.height() - side) // 2
+        pix = pix.copy(x, y, side, side)
+        pix = pix.scaled(thumb_size, thumb_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        item.setIcon(QIcon(pix))
+        thumb_list.insertItem(0, item)
+
+
+def _create_video_placeholder(thumb_size: int):
+    """Create a placeholder pixmap for videos."""
+    pix = QPixmap(thumb_size, thumb_size)
+    pix.fill(QColor("#1a1a1a"))
+    painter = QPainter(pix)
+    painter.setPen(QColor("#666666"))
+    painter.setFont(QFont("Arial", 14))
+    painter.drawText(pix.rect(), Qt.AlignCenter, "▶\nVIDEO")
+    painter.end()
+    return pix
+
+
+def _update_thumbnail_icon(thumb_list, file_path, icon):
+    """Update thumbnail icon once it's ready."""
+    for i in range(thumb_list.count()):
+        item = thumb_list.item(i)
+        if item.data(Qt.UserRole) == file_path:
+            item.setIcon(icon)
+            break
 
 
 
@@ -975,10 +1057,16 @@ def create_left_panel():
     destino_label.setStyleSheet(info_style)
     layout.addWidget(destino_label)
     
+
     status_label = QLabel("Status: Pronto")
     status_label.setStyleSheet(info_style + " color: #90EE90;")
     layout.addWidget(status_label)
-    
+
+    arquivos_label = QLabel("Arquivos: 0")
+    arquivos_label.setStyleSheet(info_style)
+    arquivos_label.setVisible(False)
+    layout.addWidget(arquivos_label)
+
     arquivo_label = QLabel("Arquivo: -")
     arquivo_label.setStyleSheet(info_style)
     layout.addWidget(arquivo_label)
@@ -998,6 +1086,7 @@ def create_left_panel():
         "pasta": pasta_label,
         "destino": destino_label,
         "status": status_label,
+        "arquivos": arquivos_label,
         "arquivo": arquivo_label
     }
     
