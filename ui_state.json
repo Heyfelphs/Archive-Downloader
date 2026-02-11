@@ -1,10 +1,10 @@
 {
   "checkboxes": {
     "imagens": true,
-    "videos": true
+    "videos": false
   },
   "last_site": "Picazor",
-  "last_model": "soraya-upaiprom",
+  "last_model": "kira-pregiato-1",
   "picazor_settings": {
     "threads": 6,
     "batch": 30,

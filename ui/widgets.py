@@ -10,6 +10,7 @@ from pathlib import Path
 import os
 import html
 from urllib.parse import urlparse
+import threading
 from config import (
     APP_NAME_COLOR,
     PICAZOR_CHECK_THREADS_DEFAULT,
@@ -89,7 +90,18 @@ class FetchWorker(QThread):
         self.picazor_threads = picazor_threads
         self.picazor_batch = picazor_batch
         self.picazor_delay = picazor_delay
+        self.stop_requested = False
+        self.is_paused = False
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # not paused by default
     
+    def _wait_if_paused(self) -> bool:
+        """Block while paused; return False if stop was requested."""
+        while not self._pause_event.is_set():
+            if self.stop_requested:
+                return False
+            self._pause_event.wait(0.1)
+        return not self.stop_requested
     def run(self):
         try:
             if not self.url.strip():
@@ -100,11 +112,22 @@ class FetchWorker(QThread):
                 print("[FetchWorker] Detected Picazor link. Starting analysis...")
                 from core.picazor_client import PicazorClient
                 client = PicazorClient(delay=self.picazor_delay)
+                
+                # Check for stop before fetching
+                if self.stop_requested:
+                    self.error.emit("Análise cancelada")
+                    return
+                
+                def progress_wrapper(count: int):
+                    if not self._wait_if_paused():
+                        return
+                    self.progress.emit(count)
+                
                 valid_indices = client.get_valid_indices_multithread(
                     self.url,
                     num_threads=self.picazor_threads,
                     batch_size=self.picazor_batch,
-                    progress_callback=self.progress.emit,
+                    progress_callback=progress_wrapper,
                 )
                 total_files = len(valid_indices)
                 print(f"[FetchWorker] Media found: {total_files} files")
@@ -125,7 +148,21 @@ class FetchWorker(QThread):
                 "valid_indices": valid_indices
             })
         except Exception as e:
-            self.error.emit(f"Erro ao buscar: {str(e)}")
+            if not self.stop_requested:
+                self.error.emit(f"Erro ao buscar: {str(e)}")
+    
+    def stop(self):
+        """Stop the fetch operation (cancellation only, no pause/resume support)."""
+        self.stop_requested = True
+        self._pause_event.set()
+    
+    def pause(self):
+        self.is_paused = True
+        self._pause_event.clear()
+    
+    def resume(self):
+        self.is_paused = False
+        self._pause_event.set()
 
 
 class ThumbnailWorker(QThread):
@@ -206,6 +243,8 @@ class DownloadWorker(QThread):
         self.picazor_batch = picazor_batch
         self.picazor_delay = picazor_delay
         self.processed_count = 0  # Rastreia arquivos processados (success + failed + skipped)
+        self.is_paused = False
+        self.stop_requested = False
     
     def progress_callback(self, data):
         """Callback for progress updates from downloader."""
@@ -280,6 +319,7 @@ class DownloadWorker(QThread):
                     link_check_delay=self.picazor_delay,
                     download_images=self.download_images,
                     download_videos=self.download_videos,
+                    worker=self,
                 )
             else:
                 download_orchestrator_with_progress(
@@ -289,10 +329,21 @@ class DownloadWorker(QThread):
                     target_dir=self.target_dir,
                     download_images=self.download_images,
                     download_videos=self.download_videos,
+                    worker=self,
                 )
             self.finished.emit()
         except Exception as e:
-            self.error.emit(f"Erro no download: {str(e)}")
+            if not self.stop_requested:
+                self.error.emit(f"Erro no download: {str(e)}")
+    
+    def pause(self):
+        self.is_paused = True
+    
+    def resume(self):
+        self.is_paused = False
+    
+    def stop(self):
+        self.stop_requested = True
 
 
 
@@ -330,6 +381,7 @@ def build_ui(parent):
     # Barra de progresso e label
     progress_label = QLabel("0 % - 0 / 0 arquivos")
     progress_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+    progress_label.setVisible(False)
     progress_bar = QProgressBar()
     progress_bar.setStyleSheet("""
         QProgressBar {
@@ -344,6 +396,7 @@ def build_ui(parent):
     """)
     progress_bar.setValue(0)
     progress_bar.setMinimumHeight(20)
+    progress_bar.setVisible(False)
     left_vbox.addWidget(progress_label)
     left_vbox.addWidget(progress_bar)
 
@@ -547,6 +600,33 @@ def create_top_section(parent):
     """)
     layout.addWidget(download_btn)
 
+    # Pausar/Retomar button
+    pause_btn = QPushButton("Pausar")
+    pause_btn.setMinimumWidth(90)
+    pause_btn.setMinimumHeight(32)
+    pause_btn.setEnabled(False)
+    pause_btn.setVisible(False)
+    pause_btn.setStyleSheet("""
+        QPushButton {
+            background-color: #ff6b35;
+            color: #ffffff;
+            border: none;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        QPushButton:hover:!disabled {
+            background-color: #ff8555;
+        }
+        QPushButton:pressed {
+            background-color: #e64820;
+        }
+        QPushButton:disabled {
+            background-color: #999;
+            color: #666;
+        }
+    """)
+    layout.addWidget(pause_btn)
+    parent.pause_btn = pause_btn
     
     # Abrir pasta button
     open_folder_btn = QPushButton("Abrir pasta")
@@ -593,6 +673,15 @@ def create_top_section(parent):
         # Esconder label destino quando novo link é inserido
         if hasattr(parent, "labels") and "destino" in parent.labels:
             parent.labels["destino"].setVisible(False)
+        # Esconder barra de progresso quando novo link é inserido
+        if hasattr(parent, "progress_bar"):
+            parent.progress_bar.setVisible(False)
+        if hasattr(parent, "progress_label"):
+            parent.progress_label.setVisible(False)
+        if hasattr(parent, "pause_btn"):
+            parent.pause_btn.setVisible(False)
+            parent.pause_btn.setEnabled(False)
+            parent.pause_btn.setText("Pausar")
         parent._download_complete_called = False
     
     model_input.textChanged.connect(on_link_changed)
@@ -609,10 +698,16 @@ def create_top_section(parent):
 
         if not url:
             parent.labels["status"].setText("Status: URL vazia!")
-            QMessageBox.warning(parent, "Link inválido", "Por favor, insira um link válido para continuar.")
+            QMessageBox.warning(parent, "URL inválida", "Por favor, insira um URL válido ou um nome de modelo.")
             model_input.setFocus()
+            checar_btn.setEnabled(True)
             return
 
+        if hasattr(parent, "pause_btn"):
+            parent.pause_btn.setVisible(True)
+            parent.pause_btn.setEnabled(True)
+            parent.pause_btn.setText("Cancelar")
+        
         # Log message
         add_log_message(parent.log_widget, f"🔍 Buscando informações da URL: {url}")
 
@@ -708,6 +803,16 @@ def create_top_section(parent):
             total_files = 0
         
         # Log message
+        
+        # Mostrar barra de progresso durante download
+        if hasattr(parent, "progress_bar"):
+            parent.progress_bar.setVisible(True)
+        if hasattr(parent, "progress_label"):
+            parent.progress_label.setVisible(True)
+        if hasattr(parent, "pause_btn"):
+            parent.pause_btn.setVisible(True)
+            parent.pause_btn.setEnabled(True)
+            parent.pause_btn.setText("Pausar")
         download_types = []
         if download_images:
             download_types.append("imagens")
@@ -726,7 +831,11 @@ def create_top_section(parent):
             parent.open_folder_btn.setEnabled(False)
         parent._download_complete_called = False
         parent.labels["status"].setText("Status: Baixando...")
+        
+        # Reset progress bar com total esperado
+        parent.progress_bar.setMaximum(total_files if total_files > 0 else 100)
         parent.progress_bar.setValue(0)
+        parent.progress_label.setText(f"0 / {total_files} arquivos (0%)")
         
         # Reset failed files list for manual analysis
         parent.failed_files_for_analysis = []
@@ -782,6 +891,29 @@ def create_top_section(parent):
 
     open_folder_btn.clicked.connect(on_open_folder_clicked)
     
+    # Connect pause button to pause/resume function
+    def on_pause_clicked():
+        download_worker = getattr(parent, "download_worker", None)
+        fetch_worker = getattr(parent, "fetch_worker", None)
+        
+        # Handle pause/resume for download only
+        if download_worker and pause_btn.text() in ("Pausar", "Retomar"):
+            if pause_btn.text() == "Pausar":
+                download_worker.pause()
+                pause_btn.setText("Retomar")
+                add_log_message(parent.log_widget, "Download pausado.", warning=True)
+            elif pause_btn.text() == "Retomar":
+                download_worker.resume()
+                pause_btn.setText("Pausar")
+                add_log_message(parent.log_widget, "Download retomado.")
+        # Handle stop for fetch (no pause/resume support for fetch)
+        elif fetch_worker and pause_btn.text() == "Cancelar":
+            fetch_worker.stop()
+            pause_btn.setText("Pausar")
+            add_log_message(parent.log_widget, "Análise cancelada.", warning=True)
+    
+    pause_btn.clicked.connect(on_pause_clicked)
+    
     return top_widget, site_combo, model_input
 
 
@@ -828,6 +960,11 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
     download_btn.setVisible(True)
     download_btn.setEnabled(True)
     # Keep checar button disabled until link changes
+    
+    # Ocultar botão de pausa ao terminar a análise
+    if hasattr(parent, "pause_btn"):
+        parent.pause_btn.setVisible(False)
+        parent.pause_btn.setEnabled(False)
 
 
 def on_fetch_error(parent, error, checar_btn):
@@ -839,6 +976,11 @@ def on_fetch_error(parent, error, checar_btn):
     
     # Re-enable checar button to allow retry
     checar_btn.setEnabled(True)
+    
+    # Ocultar botão de pausa ao falhar a análise
+    if hasattr(parent, "pause_btn"):
+        parent.pause_btn.setVisible(False)
+        parent.pause_btn.setEnabled(False)
 
 
 def on_download_progress_update(parent, data):
@@ -855,6 +997,8 @@ def on_download_progress_update(parent, data):
         # Arquivo foi baixado com sucesso
         count = data.get("count", 0)
         total = data.get("total", 0)
+        if total == 0:
+            total = parent.progress_bar.maximum()
         percent = data.get("percent", 0)
         processed = data.get("processed", 0)
         filename = data['filename']
@@ -899,8 +1043,10 @@ def on_download_progress_update(parent, data):
         # Atualizar progress bar e label com base em arquivos processados do worker
         processed = data.get("processed", 0)
         percent = data.get("percent", 0)
+        total = data.get("total", 0)
+        if total == 0:
+            total = parent.progress_bar.maximum()
         parent.progress_bar.setValue(processed)
-        total = parent.progress_bar.maximum()
         parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
     elif data["type"] == "file_error":
         # Erro ao baixar arquivo
@@ -909,8 +1055,10 @@ def on_download_progress_update(parent, data):
         # Atualizar progress bar e label com base em arquivos processados do worker
         processed = data.get("processed", 0)
         percent = data.get("percent", 0)
+        total = data.get("total", 0)
+        if total == 0:
+            total = parent.progress_bar.maximum()
         parent.progress_bar.setValue(processed)
-        total = parent.progress_bar.maximum()
         parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
         # (Removido: guardar arquivo com erro para análise manual)
         parent.labels["status"].setText(f"Status: Erro ao baixar {filename}")
@@ -985,6 +1133,17 @@ def on_download_complete(parent, checar_btn, download_btn):
     checar_btn.setEnabled(True)
     if hasattr(parent, "open_folder_btn"):
         parent.open_folder_btn.setEnabled(True)
+    
+    # Ocultar botão de pausa ao terminar o download
+    if hasattr(parent, "pause_btn"):
+        parent.pause_btn.setVisible(False)
+        parent.pause_btn.setEnabled(False)
+    
+    # Ocultar barra de progresso e label ao terminar
+    if hasattr(parent, "progress_bar"):
+        parent.progress_bar.setVisible(False)
+    if hasattr(parent, "progress_label"):
+        parent.progress_label.setVisible(False)
 
     # Atualizar lista de modelos baixados
     refresh_downloaded_models_list(parent)
@@ -998,6 +1157,17 @@ def on_download_error(parent, error, checar_btn, download_btn):
     checar_btn.setEnabled(True)
     if hasattr(parent, "open_folder_btn"):
         parent.open_folder_btn.setEnabled(False)
+    
+    # Ocultar botão de pausa ao falhar o download
+    if hasattr(parent, "pause_btn"):
+        parent.pause_btn.setVisible(False)
+        parent.pause_btn.setEnabled(False)
+    
+    # Ocultar barra de progresso e label ao falhar
+    if hasattr(parent, "progress_bar"):
+        parent.progress_bar.setVisible(False)
+    if hasattr(parent, "progress_label"):
+        parent.progress_label.setVisible(False)
 
 
 def get_downloaded_models(base_path=None):

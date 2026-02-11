@@ -1,4 +1,5 @@
-import os
+﻿import os
+import time
 # core/downloader_progress.py
 
 from multiprocessing.pool import ThreadPool
@@ -11,6 +12,7 @@ from config import (
     DOWNLOADING_STATUS,
     COMPLETED_STATUS,
     ERROR_STATUS,
+    CANCELLED_STATUS,
 )
 
 
@@ -30,9 +32,19 @@ def download_worker_with_progress(
     progress_callback=None,
     download_images: bool = True,
     download_videos: bool = True,
+    worker=None,  # Referência ao worker para verificar pausa/stop
 ):
     """Download worker with progress callback."""
     global download_stats
+    
+    # Verificar se há solicitação de stop
+    if worker and worker.stop_requested:
+        return
+    
+    # Aguardar se estiver em pausa
+    while worker and worker.is_paused:
+        time.sleep(0.1)
+    
     # Garante que a base termina com barra
     if not base_url.endswith("/"):
         base_url = base_url + "/"
@@ -122,6 +134,7 @@ def download_orchestrator_with_progress(
     target_dir=None,
     download_images: bool = True,
     download_videos: bool = True,
+    worker=None,  # Referência ao worker para verificar pausa/stop
 ):
     """Download orchestrator with progress tracking."""
     global download_stats
@@ -137,6 +150,25 @@ def download_orchestrator_with_progress(
         target_dir = join("catalog", "models", model_name)
     target_dir = os.fspath(target_dir)
 
+    # Define worker_wrapper once for reuse
+    def worker_wrapper(idx):
+        if worker and worker.stop_requested:
+            return None
+        while worker and worker.is_paused:
+            time.sleep(0.1)
+        if worker and worker.stop_requested:
+            return None
+        download_worker_with_progress(
+            url,
+            target_dir,
+            idx,
+            progress_callback,
+            download_images=download_images,
+            download_videos=download_videos,
+            worker=worker,
+        )
+        return idx
+
     try:
         if progress_callback:
             progress_callback({
@@ -145,60 +177,71 @@ def download_orchestrator_with_progress(
             })
         recreate_dir(target_dir)
 
-        if "picazor.com" in url:
-            from core.picazor_client import PicazorClient
-            client = PicazorClient()
-            valid_indices = client.get_valid_indices(url)
-            if not valid_indices:
-                valid_indices = list(range(1, client.get_total_files(url) + 1))
-            total_expected = len(valid_indices)
-            # Baixar todos os índices válidos
-            with ThreadPool(workers) as pool:
-                pool.map(
-                    lambda idx: download_worker_with_progress(
-                        url,
-                        target_dir,
-                        idx,
-                        progress_callback,
-                        download_images=download_images,
-                        download_videos=download_videos,
-                    ),
-                    valid_indices
-                )
-            # Continuar tentando além do maior índice encontrado até 10 skips consecutivos
-            consecutive_skips = 0
-            idx = max(valid_indices) + 1 if valid_indices else 1
-            max_idx = idx + 1000
-            while consecutive_skips < 10 and idx < max_idx:
-                prev_skipped = download_stats["skipped"]
-                download_worker_with_progress(
-                    url,
-                    target_dir,
-                    idx,
-                    progress_callback,
-                    download_images=download_images,
-                    download_videos=download_videos,
-                )
-                if download_stats["skipped"] > prev_skipped:
-                    consecutive_skips += 1
-                else:
+        pool = ThreadPool(workers)
+        was_cancelled = False
+        try:
+            if "picazor.com" in url:
+                from core.picazor_client import PicazorClient
+                client = PicazorClient()
+                valid_indices = client.get_valid_indices(url)
+                if not valid_indices:
+                    valid_indices = list(range(1, client.get_total_files(url) + 1))
+                total_expected = len(valid_indices)
+                
+                # Process with imap_unordered for better concurrency
+                chunk_size = max(1, workers * 2)
+                for result in pool.imap_unordered(worker_wrapper, valid_indices, chunksize=chunk_size):
+                    if worker and worker.stop_requested:
+                        pool.terminate()
+                        pool.join()
+                        was_cancelled = True
+                        raise KeyboardInterrupt("Download stopped by user")
+                
+                # Continuar tentando além do maior índice encontrado até 10 skips consecutivos
+                if not (worker and worker.stop_requested):
                     consecutive_skips = 0
-                idx += 1
-        else:
-            total_expected = get_total_files(url)
-            indices = list(range(1, total_expected + 1))
-            with ThreadPool(workers) as pool:
-                pool.map(
-                    lambda idx: download_worker_with_progress(
-                        url,
-                        target_dir,
-                        idx,
-                        progress_callback,
-                        download_images=download_images,
-                        download_videos=download_videos,
-                    ),
-                    indices
-                )
+                    idx = max(valid_indices) + 1 if valid_indices else 1
+                    max_idx = idx + 1000
+                    
+                    while consecutive_skips < 10 and idx < max_idx:
+                        if worker and worker.stop_requested:
+                            pool.terminate()
+                            pool.join()
+                            was_cancelled = True
+                            raise KeyboardInterrupt("Download stopped by user")
+                        
+                        # Process in small chunks
+                        chunk = list(range(idx, min(idx + workers * 2, max_idx)))
+                        prev_skipped = download_stats["skipped"]
+                        
+                        for result in pool.imap_unordered(worker_wrapper, chunk, chunksize=max(1, workers)):
+                            if worker and worker.stop_requested:
+                                pool.terminate()
+                                pool.join()
+                                was_cancelled = True
+                                raise KeyboardInterrupt("Download stopped by user")
+                        
+                        new_skips = download_stats["skipped"] - prev_skipped
+                        if new_skips == len(chunk):
+                            consecutive_skips += new_skips
+                        else:
+                            consecutive_skips = 0
+                        idx += len(chunk)
+            else:
+                total_expected = get_total_files(url)
+                indices = list(range(1, total_expected + 1))
+                
+                # Process with imap_unordered for better concurrency
+                chunk_size = max(1, workers * 2)
+                for result in pool.imap_unordered(worker_wrapper, indices, chunksize=chunk_size):
+                    if worker and worker.stop_requested:
+                        pool.terminate()
+                        pool.join()
+                        was_cancelled = True
+                        raise KeyboardInterrupt("Download stopped by user")
+        finally:
+            pool.close()
+            pool.join()
 
         # Emit final summary mantendo o valor inicial
         if progress_callback:
@@ -211,16 +254,29 @@ def download_orchestrator_with_progress(
                 "failed_indices": download_stats["failed_indices"]
             })
 
+        if was_cancelled:
+            if progress_callback:
+                progress_callback({
+                    "type": "status",
+                    "status": CANCELLED_STATUS
+                })
+            return
+
         if progress_callback:
             progress_callback({
                 "type": "status",
                 "status": COMPLETED_STATUS
             })
 
+    except KeyboardInterrupt:
+        if progress_callback:
+            progress_callback({
+                "type": "status",
+                "status": CANCELLED_STATUS
+            })
     except Exception as e:
         if progress_callback:
             progress_callback({
                 "type": "status",
                 "status": f"{ERROR_STATUS}{e}"
             })
-

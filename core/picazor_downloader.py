@@ -10,6 +10,7 @@ from config import (
 )
 from utils.network import download_binary
 import os
+import time
 
 
 def picazor_download_orchestrator(
@@ -22,6 +23,7 @@ def picazor_download_orchestrator(
     link_check_delay: float = None,
     download_images: bool = True,
     download_videos: bool = True,
+    worker=None,  # Referência ao worker para verificar pausa/stop
 ):
     if workers is None:
         workers = PICAZOR_CHECK_THREADS_DEFAULT
@@ -58,6 +60,21 @@ def picazor_download_orchestrator(
     files_downloaded = 0
 
     for idx, post_url in enumerate(post_urls, 1):
+        # Verificar se há solicitação de stop
+        if worker and worker.stop_requested:
+            break
+        
+        # Aguardar se estiver em pausa
+        while worker and worker.is_paused:
+            if worker.stop_requested:
+                break
+            time.sleep(0.1)
+            if worker.stop_requested:
+                break
+        
+        if worker and worker.stop_requested:
+            break
+        
         media_list = client.get_media_info(post_url)
         media_list = [item for item in media_list if should_download(item[1])]
         # Determina o número real da página
@@ -70,6 +87,18 @@ def picazor_download_orchestrator(
             except Exception:
                 page_number = idx
         for m_idx, (file_url, media_type) in enumerate(media_list):
+            # Verificar pausa/stop antes de cada download
+            if worker and worker.stop_requested:
+                break
+            
+            while worker and worker.is_paused:
+                if worker.stop_requested:
+                    break
+                time.sleep(0.1)
+            
+            if worker and worker.stop_requested:
+                break
+            
             # Corrige URLs relativas para absolutas
             if file_url and file_url.startswith("/"):
                 file_url = "https://picazor.com" + file_url

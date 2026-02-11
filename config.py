@@ -34,6 +34,7 @@ COMPLETED_STATUS = "Completed"
 DOWNLOADING_STATUS = "Downloading"
 ERROR_STATUS = "Error"
 STOP_STATUS = "Stop"
+CANCELLED_STATUS = "Cancelled"
 
 HEADERS_FOR_REQUESTS = {
     "User-Agent": (
