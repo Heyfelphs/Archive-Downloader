@@ -70,8 +70,27 @@ def build_ui(parent):
     progress_bar.setValue(0)
     progress_bar.setMinimumHeight(20)
     progress_bar.setVisible(False)
+    file_progress_bar = QProgressBar()
+    file_progress_bar.setStyleSheet("""
+        QProgressBar {
+            background-color: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 3px;
+            height: 16px;
+        }
+        QProgressBar::chunk {
+            background-color: #3fa9f5;
+        }
+    """)
+    file_progress_bar.setRange(0, 100)
+    file_progress_bar.setValue(0)
+    file_progress_bar.setTextVisible(True)
+    file_progress_bar.setFormat("%p%")
+    file_progress_bar.setMinimumHeight(16)
+    file_progress_bar.setVisible(False)
     left_vbox.addWidget(progress_label)
     left_vbox.addWidget(progress_bar)
+    left_vbox.addWidget(file_progress_bar)
 
     # Log de atividades
     log_label = QLabel("log de atividades:")
@@ -149,6 +168,7 @@ def build_ui(parent):
     central_widget.checkboxes = checkboxes_dict
     central_widget.progress_bar = progress_bar
     central_widget.progress_label = progress_label
+    central_widget.file_progress_bar = file_progress_bar
     central_widget.log_widget = log_widget
     central_widget.thumbnails_container = thumbnails_container
     central_widget.thumb_list = thumbnails_container
@@ -351,6 +371,8 @@ def create_top_section(parent):
             parent.progress_bar.setVisible(False)
         if hasattr(parent, "progress_label"):
             parent.progress_label.setVisible(False)
+        if hasattr(parent, "file_progress_bar"):
+            parent.file_progress_bar.setVisible(False)
         if hasattr(parent, "pause_btn"):
             parent.pause_btn.setVisible(False)
             parent.pause_btn.setEnabled(False)
@@ -400,12 +422,7 @@ def create_top_section(parent):
         worker = FetchWorker(url, picazor_threads, picazor_batch, picazor_delay)
         worker.finished.connect(lambda data: on_fetch_complete(parent, data, checar_btn, download_btn))
         worker.error.connect(lambda err: on_fetch_error(parent, err, checar_btn))
-        # Atualiza label arquivos em tempo real para Picazor
-        if "picazor.com" in url:
-            def update_picazor_progress(count):
-                parent.labels["arquivos"].setVisible(True)
-                parent.labels["arquivos"].setText(f"Arquivos: {count}")
-            worker.progress.connect(update_picazor_progress)
+        # (Removido: label de arquivos)
         worker.start()
         parent.fetch_worker = worker  # Store reference to prevent garbage collection
     
@@ -429,8 +446,7 @@ def create_top_section(parent):
             return
 
         # Pergunta a pasta de destino antes de iniciar o download
-        from pathlib import Path
-        import os
+
         # Tenta usar a pasta de imagens do usuário como padrão
         pictures_dir = Path(os.path.expanduser(r"~")) / "Pictures"
         if not pictures_dir.exists():
@@ -438,7 +454,9 @@ def create_top_section(parent):
         base_dir = getattr(parent, "download_root", pictures_dir)
         parts = [p for p in url.split("/") if p]
         model_name = parts[-1] if parts else ""
-        suggested_dir = base_dir / model_name if model_name else base_dir
+        suggested_dir = base_dir / site_label
+        if model_name:
+            suggested_dir = suggested_dir / model_name
         folder = QFileDialog.getExistingDirectory(parent, "Escolha a pasta para salvar o download", str(suggested_dir))
         if not folder:
             parent.labels["status"].setText("Status: Download cancelado pelo usuário.")
@@ -448,7 +466,7 @@ def create_top_section(parent):
         # Cria subpasta com nome da modelo
         parts = [p for p in url.split("/") if p]
         model_name = parts[-1] if parts else "modelo"
-        target_dir = Path(folder) / model_name
+        target_dir = Path(folder) / site_label / model_name
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
             test_file = target_dir / "__fapello_test_perm.txt"
@@ -475,6 +493,16 @@ def create_top_section(parent):
         except:
             total_files = 0
         
+        # Check if this is Picazor (total is number of indices/pages, not real files)
+        url = build_url(site_combo.currentText(), model_input.text().strip())
+        is_picazor = "picazor.com" in url
+        
+        # For Picazor, total_files is indices/pages; real file count is unknown until download starts
+        if is_picazor:
+            total_files_for_progress = None  # Mark as unknown
+        else:
+            total_files_for_progress = total_files
+        
         # Log message
         
         # Mostrar barra de progresso durante download
@@ -482,6 +510,8 @@ def create_top_section(parent):
             parent.progress_bar.setVisible(True)
         if hasattr(parent, "progress_label"):
             parent.progress_label.setVisible(True)
+        if hasattr(parent, "file_progress_bar"):
+            parent.file_progress_bar.setVisible(True)
         if hasattr(parent, "pause_btn"):
             parent.pause_btn.setVisible(True)
             parent.pause_btn.setEnabled(True)
@@ -491,7 +521,11 @@ def create_top_section(parent):
             download_types.append("imagens")
         if download_videos:
             download_types.append("vídeos")
-        add_log_message(parent.log_widget, f"⬇️  Iniciando download de {', '.join(download_types)} ({total_files} arquivo(s))")
+        
+        if is_picazor:
+            add_log_message(parent.log_widget, f"⬇️  Iniciando download de {', '.join(download_types)} ({total_files} índice(s))")
+        else:
+            add_log_message(parent.log_widget, f"⬇️  Iniciando download de {', '.join(download_types)} ({total_files} arquivo(s))")
         add_log_message(parent.log_widget, f"Destino: {target_dir}")
         
         # Limpar thumbnails anteriores
@@ -506,9 +540,19 @@ def create_top_section(parent):
         parent.labels["status"].setText("Status: Baixando...")
         
         # Reset progress bar com total esperado
-        parent.progress_bar.setMaximum(total_files if total_files > 0 else 100)
-        parent.progress_bar.setValue(0)
-        parent.progress_label.setText(f"0 / {total_files} arquivos (0%)")
+        if is_picazor:
+            # Para Picazor, o total real de arquivos é desconhecido no início
+            # Use um placeholder máximo que será atualizado quando o summary chegar
+            parent.progress_bar.setMaximum(1000)
+            parent.progress_bar.setValue(0)
+            parent.progress_label.setText(f"0 / ? arquivos (0%)")
+            parent._picazor_real_total_unknown = True
+        else:
+            # Para outros sites, total_files é o número real de arquivos
+            parent.progress_bar.setMaximum(total_files_for_progress if total_files_for_progress and total_files_for_progress > 0 else 100)
+            parent.progress_bar.setValue(0)
+            parent.progress_label.setText(f"0 / {total_files_for_progress} arquivos (0%)")
+            parent._picazor_real_total_unknown = False
         
         # Reset failed files list for manual analysis
         parent.failed_files_for_analysis = []
@@ -525,6 +569,7 @@ def create_top_section(parent):
         picazor_delay = picazor_delay_input.value() if picazor_delay_input else PICAZOR_CHECK_DELAY_DEFAULT
 
         # Create download worker thread
+        # For Picazor, pass total_files (indices count) even though real file count is unknown
         download_worker = DownloadWorker(
             url,
             download_images,
@@ -550,7 +595,15 @@ def create_top_section(parent):
         if folder:
             parent.download_root = Path(folder)
             if hasattr(parent, "labels") and "destino" in parent.labels:
-                parent.labels["destino"].setText(f"Destino: {folder}")
+                site_label = parent.site_combo.currentText() if hasattr(parent, "site_combo") else ""
+                model_text = parent.model_input.text().strip() if hasattr(parent, "model_input") else ""
+                if site_label and model_text:
+                    destino = Path(folder) / site_label / model_text
+                elif site_label:
+                    destino = Path(folder) / site_label
+                else:
+                    destino = Path(folder)
+                parent.labels["destino"].setText(f"Destino: {destino}")
             add_log_message(parent.log_widget, f"Pasta de download selecionada: {folder}")
 
     # (Removido: botão de escolher pasta)
@@ -604,8 +657,7 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
     if "picazor.com" in url:
         # Para Picazor, data['total'] é o número de índices/páginas, não de arquivos reais
         # O total real será recebido no 'summary' durante o download
-        parent.labels["arquivos"].setVisible(True)
-        parent.labels["arquivos"].setText(f"Arquivos: {data['total']}")
+        # (Removido: label de arquivos)
         # Define maximum para um valor alto temporário; será atualizado quando o summary chegar
         parent.progress_bar.setMaximum(1000)
         parent.progress_label.setText(f"0 / ? arquivos (0%)")
@@ -613,7 +665,7 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
         parent._picazor_real_total_unknown = True
     else:
         # Para Fapello, data['total'] é o número real de arquivos
-        parent.labels["arquivos"].setVisible(False)
+        # (Removido: label de arquivos)
         parent.progress_bar.setMaximum(data['total'])
         parent.progress_label.setText(f"0 / {data['total']} arquivos (0%)")
         parent._picazor_real_total_unknown = False
@@ -664,8 +716,30 @@ def on_download_progress_update(parent, data):
         filename = data['filename']
         index = data['index']
         parent.labels["arquivo"].setText(f"Arquivo: {filename}")
-        add_log_message(parent.log_widget, f"→ Baixando [{index}] {filename}...")
+        parent._current_file_index = index
+        if hasattr(parent, "file_progress_bar"):
+            parent.file_progress_bar.setVisible(True)
+            parent.file_progress_bar.setRange(0, 100)
+            parent.file_progress_bar.setValue(0)
+            parent.file_progress_bar.setFormat("%p%")
+        # Mantem o status visual, mas nao registra no log.
     
+    elif data["type"] == "file_progress":
+        index = data.get("index")
+        if getattr(parent, "_current_file_index", None) != index:
+            return
+        bytes_downloaded = data.get("bytes_downloaded", 0)
+        total_bytes = data.get("total_bytes")
+        if hasattr(parent, "file_progress_bar"):
+            if total_bytes and total_bytes > 0:
+                percent = int((bytes_downloaded / total_bytes) * 100)
+                parent.file_progress_bar.setRange(0, 100)
+                parent.file_progress_bar.setValue(percent)
+                parent.file_progress_bar.setFormat("%p%")
+            else:
+                parent.file_progress_bar.setRange(0, 0)
+                parent.file_progress_bar.setFormat("Baixando...")
+
     elif data["type"] == "file_complete":
         # Arquivo foi baixado com sucesso
         count = data.get("count", 0)
@@ -684,9 +758,13 @@ def on_download_progress_update(parent, data):
         
         # Atualizar label de arquivo
         parent.labels["arquivo"].setText(f"Arquivo: {filename}")
-        
-        # Log message
-        add_log_message(parent.log_widget, f"✓ Concluído [{count}/{total}] {filename}")
+        if getattr(parent, "_current_file_index", None) == data.get("index"):
+            if hasattr(parent, "file_progress_bar"):
+                parent.file_progress_bar.setRange(0, 100)
+                parent.file_progress_bar.setValue(100)
+                parent.file_progress_bar.setFormat("%p%")
+        # Log message - sempre aparecer no log
+        add_log_message(parent.log_widget, f"✓ Concluído {filename}")
         
         # Tentar adicionar thumbnail
         # Usar o caminho completo do arquivo se fornecido, caso contrário construir
@@ -709,10 +787,13 @@ def on_download_progress_update(parent, data):
                     pass
     
     elif data["type"] == "file_skipped":
-        # Arquivo não estava disponível
+        # Arquivo não estava disponível ou já existe
         index = data['index']
         reason = data.get('reason', 'indisponível')
-        add_log_message(parent.log_widget, f"⊘ Pulado [{index}] {reason}", warning=True)
+        filename = data.get('filename', '')
+        # Log apenas se arquivo já existe
+        if reason == "Arquivo ja existe" and filename:
+            add_log_message(parent.log_widget, f"⊘ Pulado [{index}] {filename} - {reason}", warning=True)
         # Atualizar progress bar e label com base em arquivos processados do worker
         processed = data.get("processed", 0)
         percent = data.get("percent", 0)
@@ -721,6 +802,11 @@ def on_download_progress_update(parent, data):
             total = parent.progress_bar.maximum()
         parent.progress_bar.setValue(processed)
         parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
+        if getattr(parent, "_current_file_index", None) == data.get("index"):
+            if hasattr(parent, "file_progress_bar"):
+                parent.file_progress_bar.setRange(0, 100)
+                parent.file_progress_bar.setValue(100)
+                parent.file_progress_bar.setFormat("%p%")
     elif data["type"] == "file_error":
         # Erro ao baixar arquivo
         filename = data['filename']
@@ -733,6 +819,11 @@ def on_download_progress_update(parent, data):
             total = parent.progress_bar.maximum()
         parent.progress_bar.setValue(processed)
         parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
+        if getattr(parent, "_current_file_index", None) == data.get("index"):
+            if hasattr(parent, "file_progress_bar"):
+                parent.file_progress_bar.setRange(0, 100)
+                parent.file_progress_bar.setValue(100)
+                parent.file_progress_bar.setFormat("%p%")
         # (Removido: guardar arquivo com erro para análise manual)
         parent.labels["status"].setText(f"Status: Erro ao baixar {filename}")
         add_log_message(parent.log_widget, f"✗ Erro em {filename}: {error}", error=True)
@@ -748,6 +839,12 @@ def on_download_progress_update(parent, data):
             processed = success + failed + skipped
         if total > 0:
             processed = min(processed, total)
+        
+        # Se Picazor e o total real era desconhecido, atualizar o máximo da barra agora
+        if getattr(parent, "_picazor_real_total_unknown", False) and total > 0:
+            parent.progress_bar.setMaximum(total)
+            parent._picazor_real_total_unknown = False
+        
         parent.progress_bar.setValue(processed)
         
         # Atualizar labels com resumo
@@ -817,6 +914,8 @@ def on_download_complete(parent, checar_btn, download_btn):
         parent.progress_bar.setVisible(False)
     if hasattr(parent, "progress_label"):
         parent.progress_label.setVisible(False)
+    if hasattr(parent, "file_progress_bar"):
+        parent.file_progress_bar.setVisible(False)
 
     # Atualizar lista de modelos baixados
     refresh_downloaded_models_list(parent)
@@ -841,6 +940,8 @@ def on_download_error(parent, error, checar_btn, download_btn):
         parent.progress_bar.setVisible(False)
     if hasattr(parent, "progress_label"):
         parent.progress_label.setVisible(False)
+    if hasattr(parent, "file_progress_bar"):
+        parent.file_progress_bar.setVisible(False)
 
 
 def get_downloaded_models(base_path=None):
@@ -1088,11 +1189,6 @@ def create_left_panel():
     status_label.setStyleSheet(info_style + " color: #90EE90;")
     layout.addWidget(status_label)
 
-    arquivos_label = QLabel("Arquivos: 0")
-    arquivos_label.setStyleSheet(info_style)
-    arquivos_label.setVisible(False)
-    layout.addWidget(arquivos_label)
-
     arquivo_label = QLabel("Arquivo: -")
     arquivo_label.setStyleSheet(info_style)
     layout.addWidget(arquivo_label)
@@ -1112,7 +1208,6 @@ def create_left_panel():
         "pasta": pasta_label,
         "destino": destino_label,
         "status": status_label,
-        "arquivos": arquivos_label,
         "arquivo": arquivo_label
     }
     

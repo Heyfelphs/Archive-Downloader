@@ -186,6 +186,14 @@ class DownloadWorker(QThread):
                 "filename": data["filename"],
                 "index": data["index"],
             })
+        elif data["type"] == "file_progress":
+            self.progress_update.emit({
+                "type": "file_progress",
+                "filename": data.get("filename", ""),
+                "index": data.get("index"),
+                "bytes_downloaded": data.get("bytes_downloaded", 0),
+                "total_bytes": data.get("total_bytes"),
+            })
         elif data["type"] == "file_complete":
             success_count = data.get("success", 0)
             self.processed_count += 1
@@ -206,6 +214,7 @@ class DownloadWorker(QThread):
                 "type": "file_skipped",
                 "index": data["index"],
                 "reason": data["reason"],
+                "filename": data.get("filename", ""),
                 "percent": progress_percent,
                 "processed": self.processed_count,
             })

@@ -6,6 +6,7 @@ from os.path import join
 from typing import Callable, Iterable, Optional
 from urllib.parse import urlparse
 import os
+import threading
 import time
 
 from config import (
@@ -20,8 +21,7 @@ from config import (
 from core.fapello_client import get_media_info, get_total_files
 from core.picazor_client import PicazorClient
 from core.worker import prepare_filename
-from utils.filesystem import recreate_dir
-from utils.network import download_binary
+from utils.network import download_binary_to_file
 
 ProgressCallback = Callable[[dict], None]
 
@@ -32,6 +32,29 @@ class DownloadStats:
     failed: int = 0
     skipped: int = 0
     failed_indices: list[int] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def increment_success(self):
+        with self._lock:
+            self.success += 1
+
+    def increment_failed(self, index: int):
+        with self._lock:
+            self.failed += 1
+            self.failed_indices.append(index)
+
+    def increment_skipped(self):
+        with self._lock:
+            self.skipped += 1
+
+    def get_stats(self):
+        with self._lock:
+            return {
+                "success": self.success,
+                "failed": self.failed,
+                "skipped": self.skipped,
+                "failed_indices": self.failed_indices.copy(),
+            }
 
 
 def _wait_if_paused(worker) -> bool:
@@ -45,6 +68,15 @@ def _wait_if_paused(worker) -> bool:
 def _extract_model_name(url: str) -> str:
     parts = [p for p in url.split("/") if p]
     return parts[-1] if parts else ""
+
+
+def _extract_site_label(url: str) -> str:
+    if "picazor.com" in url:
+        return "Picazor"
+    if "fapello.com" in url:
+        return "Fapello"
+    parsed = urlparse(url)
+    return parsed.netloc or "Site"
 
 
 def _media_list_for_index(
@@ -100,7 +132,7 @@ def download_worker_with_progress(
     )
 
     if not media_list:
-        stats.skipped += 1
+        stats.increment_skipped()
         if progress_callback:
             progress_callback({
                 "type": "file_skipped",
@@ -110,6 +142,13 @@ def download_worker_with_progress(
         return
 
     model_name = _extract_model_name(base_url)
+    parsed_base = urlparse(base_url)
+    origin = None
+    if parsed_base.scheme and parsed_base.netloc:
+        origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+    referer = None
+    if "fapello.com" in base_url or "picazor.com" in base_url:
+        referer = f"{base_url.rstrip('/')}/{index}"
     for idx, (file_url, media_type) in enumerate(media_list):
         if worker and getattr(worker, "stop_requested", False):
             return
@@ -134,9 +173,41 @@ def download_worker_with_progress(
         try:
             if not file_url.startswith("http"):
                 raise ValueError(f"URL invalida para download: {file_url}")
-            with open(path, "wb") as handle:
-                handle.write(download_binary(file_url))
-            stats.success += 1
+            # Check if file already exists
+            if os.path.exists(path):
+                stats.increment_skipped()
+                if progress_callback:
+                    progress_callback({
+                        "type": "file_skipped",
+                        "index": index,
+                        "reason": "Arquivo ja existe",
+                        "filename": filename,
+                    })
+                continue
+            use_cloudscraper = "picazor.com" in base_url
+            def _file_progress(bytes_downloaded: int, total_bytes: int | None):
+                if progress_callback:
+                    progress_callback({
+                        "type": "file_progress",
+                        "filename": filename,
+                        "index": index,
+                        "bytes_downloaded": bytes_downloaded,
+                        "total_bytes": total_bytes,
+                    })
+
+            download_binary_to_file(
+                file_url,
+                path,
+                referer=referer,
+                origin=origin,
+                use_cloudscraper=use_cloudscraper,
+                progress_callback=_file_progress,
+            )
+            # Check if file is empty (0 bytes) and delete if so
+            if os.path.exists(path) and os.path.getsize(path) == 0:
+                os.remove(path)
+                raise ValueError(f"Arquivo baixado vazio (0 bytes)")
+            stats.increment_success()
             if progress_callback:
                 progress_callback({
                     "type": "file_complete",
@@ -145,8 +216,7 @@ def download_worker_with_progress(
                     "success": stats.success,
                 })
         except Exception as exc:
-            stats.failed += 1
-            stats.failed_indices.append(index)
+            stats.increment_failed(index)
             if progress_callback:
                 progress_callback({
                     "type": "file_error",
@@ -173,7 +243,8 @@ def download_orchestrator_with_progress(
     stats = DownloadStats()
     model_name = _extract_model_name(url)
     if target_dir is None:
-        target_dir = join("catalog", "models", model_name)
+        site_label = _extract_site_label(url)
+        target_dir = join("catalog", "models", site_label, model_name)
     target_dir = os.fspath(target_dir)
 
     if link_check_batch is None:
@@ -203,7 +274,8 @@ def download_orchestrator_with_progress(
     try:
         if progress_callback:
             progress_callback({"type": "status", "status": DOWNLOADING_STATUS})
-        recreate_dir(target_dir)
+        # Create directory if it doesn't exist, but don't delete existing files
+        os.makedirs(target_dir, exist_ok=True)
 
         pool = ThreadPool(workers)
         was_cancelled = False

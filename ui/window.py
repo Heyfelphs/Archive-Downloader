@@ -149,6 +149,27 @@ class AppWindow(QMainWindow):
             print(f"Erro ao restaurar estado da UI: {e}")
 
     def closeEvent(self, event):
+        # Garantir que threads sejam finalizadas antes de fechar a janela
+        try:
+            central = self.centralWidget()
+            if central is not None:
+                fetch_worker = getattr(central, "fetch_worker", None)
+                if fetch_worker and fetch_worker.isRunning():
+                    fetch_worker.stop()
+                    fetch_worker.wait(2000)
+
+                download_worker = getattr(central, "download_worker", None)
+                if download_worker and download_worker.isRunning():
+                    download_worker.stop()
+                    download_worker.wait(2000)
+
+                thumbnail_workers = getattr(central, "_thumbnail_workers", [])
+                for worker in list(thumbnail_workers):
+                    if worker and worker.isRunning():
+                        worker.wait(2000)
+        except Exception as e:
+            print(f"Erro ao encerrar threads: {e}")
+
         # Salvar estado das checkboxes e link
         try:
             from config import save_ui_state
