@@ -1,7 +1,14 @@
 # ui/window.py
 
 from PySide6.QtWidgets import QMainWindow, QApplication, QMessageBox
-from ui.widgets import build_ui
+from ui.widgets import (
+    build_ui,
+    apply_theme,
+    label_from_theme,
+    theme_from_label,
+    normalize_theme_name,
+    THEMES,
+)
 from ui.link_utils import parse_supported_link
 from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QKeySequence
@@ -27,6 +34,40 @@ class AppWindow(QMainWindow):
             return float(value)
         except (ValueError, TypeError):
             return default
+
+    def _apply_window_theme(self, theme_name: str):
+        theme = THEMES.get(normalize_theme_name(theme_name), THEMES["dark"])
+        self.setStyleSheet(
+            f"""
+            QMainWindow {{
+                background-color: {theme['window_bg']};
+            }}
+            QLabel {{
+                color: {theme['text']};
+            }}
+            QLineEdit {{
+                background-color: {theme['input_bg']};
+                color: {theme['text']};
+                border: 1px solid {theme['border']};
+                padding: 5px;
+                border-radius: 3px;
+            }}
+            QComboBox {{
+                background-color: {theme['input_bg']};
+                color: {theme['text']};
+                border: 1px solid {theme['border']};
+                padding: 4px 6px;
+                border-radius: 3px;
+            }}
+            QCheckBox {{
+                color: {theme['text']};
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+            }}
+            """
+        )
     
     def __init__(self):
         super().__init__()
@@ -40,41 +81,19 @@ class AppWindow(QMainWindow):
         self.setFixedSize(1200, 800)
         self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint | Qt.CustomizeWindowHint)
         
-        # Apply dark theme
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #1e1e1e;
-            }
-            QLabel {
-                color: #ffffff;
-            }
-            QLineEdit {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 5px;
-                border-radius: 3px;
-            }
-            QComboBox {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 4px 6px;
-                border-radius: 3px;
-            }
-            QCheckBox {
-                color: #ffffff;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-            }
-        """)
-        
-
         # Build UI
         central_widget = build_ui(self)
         self.setCentralWidget(central_widget)
+        self._apply_window_theme("dark")
+        apply_theme(central_widget, "dark")
+
+        def on_theme_changed(label: str):
+            theme_name = theme_from_label(label)
+            self._apply_window_theme(theme_name)
+            apply_theme(central_widget, theme_name)
+
+        if hasattr(central_widget, "theme_combo") and central_widget.theme_combo is not None:
+            central_widget.theme_combo.currentTextChanged.connect(on_theme_changed)
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
@@ -83,6 +102,7 @@ class AppWindow(QMainWindow):
         try:
             from config import (
                 load_ui_state,
+                DEFAULT_THEME,
                 PICAZOR_CHECK_THREADS_DEFAULT,
                 PICAZOR_CHECK_BATCH_DEFAULT,
                 PICAZOR_CHECK_DELAY_DEFAULT,
@@ -90,6 +110,14 @@ class AppWindow(QMainWindow):
             state = load_ui_state()
             if not isinstance(state, dict):
                 state = {}
+
+            theme_name = state.get("theme", DEFAULT_THEME)
+            if hasattr(central_widget, "theme_combo") and central_widget.theme_combo is not None:
+                central_widget.theme_combo.setCurrentText(label_from_theme(theme_name))
+                on_theme_changed(central_widget.theme_combo.currentText())
+            else:
+                self._apply_window_theme(theme_name)
+                apply_theme(central_widget, theme_name)
             
             # Restaurar checkboxes
             if hasattr(central_widget, 'checkboxes'):
@@ -203,6 +231,7 @@ class AppWindow(QMainWindow):
                 'last_model': getattr(central, 'model_input', None).text() if hasattr(central, 'model_input') else '',
                 'picazor_settings': picazor_settings,
                 'last_chosen_folder': getattr(central, 'last_chosen_folder', ''),
+                'theme': theme_from_label(getattr(central, 'theme_combo', None).currentText()) if hasattr(central, 'theme_combo') else 'dark',
             }
             save_ui_state(state)
         except Exception as e:

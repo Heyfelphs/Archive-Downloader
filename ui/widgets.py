@@ -20,6 +20,299 @@ from config import (
 )
 
 
+THEMES = {
+    "dark": {
+        "window_bg": "#1e1e1e",
+        "panel_bg": "#1e1e1e",
+        "widget_bg": "#2d2d2d",
+        "widget_bg_alt": "#181818",
+        "input_bg": "#2d2d2d",
+        "text": "#ffffff",
+        "text_muted": "#888888",
+        "border": "#444444",
+        "border_soft": "#333333",
+        "accent": "#ffbf00",
+        "accent_hover": "#ffc933",
+        "accent_pressed": "#e6a800",
+        "button_bg": "#2d2d2d",
+        "button_hover": "#3d3d3d",
+        "button_pressed": "#444444",
+        "button_disabled_bg": "#1a1a1a",
+        "button_disabled_text": "#666666",
+        "progress_primary": "#ffbf00",
+        "progress_secondary": "#3fa9f5",
+        "pause_bg": "#ff6b35",
+        "pause_hover": "#ff8555",
+        "pause_pressed": "#e64820",
+        "cancel_bg": "#7a1f1f",
+        "cancel_hover": "#8f2a2a",
+        "cancel_pressed": "#5c1717",
+        "status_ok": "#90EE90",
+    },
+    "light": {
+        "window_bg": "#f2f2f2",
+        "panel_bg": "#ffffff",
+        "widget_bg": "#f6f6f6",
+        "widget_bg_alt": "#ffffff",
+        "input_bg": "#ffffff",
+        "text": "#111111",
+        "text_muted": "#666666",
+        "border": "#cccccc",
+        "border_soft": "#dddddd",
+        "accent": "#d9a700",
+        "accent_hover": "#e6b300",
+        "accent_pressed": "#c49100",
+        "button_bg": "#f0f0f0",
+        "button_hover": "#e6e6e6",
+        "button_pressed": "#dcdcdc",
+        "button_disabled_bg": "#efefef",
+        "button_disabled_text": "#9a9a9a",
+        "progress_primary": "#d9a700",
+        "progress_secondary": "#2f89d8",
+        "pause_bg": "#ff7a45",
+        "pause_hover": "#ff8f64",
+        "pause_pressed": "#e35c2f",
+        "cancel_bg": "#a12a2a",
+        "cancel_hover": "#b33636",
+        "cancel_pressed": "#7a1f1f",
+        "status_ok": "#2e8b57",
+    },
+}
+
+THEME_LABELS = {
+    "Escuro": "dark",
+    "Claro": "light",
+}
+THEME_LABELS_REVERSE = {
+    "dark": "Escuro",
+    "light": "Claro",
+}
+
+
+def normalize_theme_name(theme_name: str) -> str:
+    value = (theme_name or "").strip().lower()
+    if value in THEMES:
+        return value
+    return "dark"
+
+
+def theme_from_label(label: str) -> str:
+    return THEME_LABELS.get(label, "dark")
+
+
+def label_from_theme(theme_name: str) -> str:
+    return THEME_LABELS_REVERSE.get(normalize_theme_name(theme_name), "Escuro")
+
+
+def apply_theme(central_widget, theme_name: str):
+    theme = THEMES.get(normalize_theme_name(theme_name), THEMES["dark"])
+
+    def _set(widget, style):
+        if widget is not None:
+            widget.setStyleSheet(style)
+
+    label_style = f"color: {theme['text']}; font-size: 11px;"
+    label_title_style = f"color: {theme['text']}; font-weight: bold;"
+    muted_label_style = f"color: {theme['text_muted']}; font-size: 10px;"
+
+    top_widget = getattr(central_widget, "top_widget", None)
+    left_panel = getattr(central_widget, "left_panel", None)
+    footer = getattr(central_widget, "footer", None)
+    footer_label = getattr(central_widget, "footer_label", None)
+    preview_label = getattr(central_widget, "preview_label", None)
+    log_label = getattr(central_widget, "log_label", None)
+
+    _set(
+        top_widget,
+        f"background-color: {theme['panel_bg']}; border-bottom: 1px solid {theme['border_soft']};",
+    )
+    _set(
+        left_panel,
+        f"background-color: {theme['panel_bg']}; border-right: 1px solid {theme['border_soft']};",
+    )
+    _set(
+        footer,
+        f"background-color: {theme['panel_bg']}; border-top: 1px solid {theme['border_soft']};",
+    )
+    _set(footer_label, muted_label_style)
+
+    _set(getattr(central_widget, "site_label", None), label_title_style)
+    _set(getattr(central_widget, "model_label", None), label_title_style)
+    _set(getattr(central_widget, "theme_label", None), label_title_style)
+    _set(preview_label, f"color: {theme['text']}; font-size: 12px;")
+    _set(log_label, label_style)
+
+    input_style = (
+        f"QLineEdit {{ background-color: {theme['input_bg']}; color: {theme['text']}; "
+        f"border: 1px solid {theme['border']}; padding: 5px; border-radius: 3px; }}"
+    )
+    combo_style = (
+        f"QComboBox {{ background-color: {theme['input_bg']}; color: {theme['text']}; "
+        f"border: 1px solid {theme['border']}; padding: 4px 6px; border-radius: 3px; }}"
+    )
+
+    _set(getattr(central_widget, "model_input", None), input_style)
+    _set(getattr(central_widget, "site_combo", None), combo_style)
+    _set(getattr(central_widget, "theme_combo", None), combo_style)
+
+    button_style = (
+        "QPushButton {"
+        f"background-color: {theme['button_bg']}; color: {theme['text']}; "
+        f"border: 1px solid {theme['border']}; border-radius: 3px; font-weight: bold;"
+        "}"
+        "QPushButton:hover:!disabled {"
+        f"background-color: {theme['button_hover']};"
+        "}"
+        "QPushButton:pressed {"
+        f"background-color: {theme['button_pressed']};"
+        "}"
+        "QPushButton:disabled {"
+        f"color: {theme['button_disabled_text']}; background-color: {theme['button_disabled_bg']}; "
+        f"border: 1px solid {theme['border_soft']};"
+        "}"
+    )
+    accent_button_style = (
+        "QPushButton {"
+        f"background-color: {theme['accent']}; color: #000000; "
+        "border: none; border-radius: 3px; font-weight: bold;"
+        "}"
+        "QPushButton:hover:!disabled {"
+        f"background-color: {theme['accent_hover']};"
+        "}"
+        "QPushButton:pressed {"
+        f"background-color: {theme['accent_pressed']};"
+        "}"
+        "QPushButton:disabled {"
+        f"background-color: {theme['button_disabled_bg']}; color: {theme['button_disabled_text']};"
+        "}"
+    )
+    pause_button_style = (
+        "QPushButton {"
+        f"background-color: {theme['pause_bg']}; color: #ffffff; "
+        "border: none; border-radius: 3px; font-weight: bold;"
+        "}"
+        "QPushButton:hover:!disabled {"
+        f"background-color: {theme['pause_hover']};"
+        "}"
+        "QPushButton:pressed {"
+        f"background-color: {theme['pause_pressed']};"
+        "}"
+        "QPushButton:disabled {"
+        f"background-color: {theme['button_disabled_bg']}; color: {theme['button_disabled_text']};"
+        "}"
+    )
+    cancel_button_style = (
+        "QPushButton {"
+        f"background-color: {theme['cancel_bg']}; color: #ffffff; "
+        "border: none; border-radius: 3px; font-weight: bold;"
+        "}"
+        "QPushButton:hover:!disabled {"
+        f"background-color: {theme['cancel_hover']};"
+        "}"
+        "QPushButton:pressed {"
+        f"background-color: {theme['cancel_pressed']};"
+        "}"
+        "QPushButton:disabled {"
+        f"background-color: {theme['button_disabled_bg']}; color: {theme['button_disabled_text']};"
+        "}"
+    )
+
+    _set(getattr(central_widget, "checar_btn", None), button_style)
+    _set(getattr(central_widget, "open_folder_btn", None), button_style)
+    _set(getattr(central_widget, "download_btn", None), accent_button_style)
+    _set(getattr(central_widget, "pause_btn", None), pause_button_style)
+    _set(getattr(central_widget, "cancel_btn", None), cancel_button_style)
+
+    checkbox_style = (
+        "QCheckBox {"
+        f"color: {theme['text']}; font-size: 11px;"
+        "}"
+        "QCheckBox::indicator {"
+        "width: 16px; height: 16px;"
+        "}"
+    )
+    for cb in getattr(central_widget, "checkboxes", {}).values():
+        _set(cb, checkbox_style)
+
+    spin_style = (
+        "QSpinBox, QDoubleSpinBox {"
+        f"background-color: {theme['input_bg']}; color: {theme['text']}; "
+        f"border: 1px solid {theme['border']}; padding: 2px 4px; border-radius: 3px;"
+        "}"
+    )
+    _set(getattr(central_widget, "picazor_threads_input", None), spin_style)
+    _set(getattr(central_widget, "picazor_batch_input", None), spin_style)
+    _set(getattr(central_widget, "picazor_delay_input", None), spin_style)
+
+    for label in getattr(central_widget, "labels", {}).values():
+        _set(label, label_style)
+
+    status_label = None
+    if isinstance(getattr(central_widget, "labels", None), dict):
+        status_label = central_widget.labels.get("status")
+    if status_label is not None:
+        _set(status_label, f"color: {theme['status_ok']}; font-size: 11px;")
+
+    _set(getattr(left_panel, "picazor_title", None), label_style)
+    _set(getattr(left_panel, "threads_label", None), label_style)
+    _set(getattr(left_panel, "batch_label", None), label_style)
+    _set(getattr(left_panel, "delay_label", None), label_style)
+
+    separator = getattr(left_panel, "separator", None)
+    _set(separator, f"background-color: {theme['border']};")
+
+    progress_label = getattr(central_widget, "progress_label", None)
+    _set(progress_label, f"color: {theme['text']}; font-size: 11px;")
+    progress_bar = getattr(central_widget, "progress_bar", None)
+    _set(
+        progress_bar,
+        "QProgressBar {"
+        f"background-color: {theme['widget_bg']}; border: 1px solid {theme['border']}; "
+        "border-radius: 3px; height: 20px;"
+        "}"
+        "QProgressBar::chunk {"
+        f"background-color: {theme['progress_primary']};"
+        "}",
+    )
+    file_progress_bar = getattr(central_widget, "file_progress_bar", None)
+    _set(
+        file_progress_bar,
+        "QProgressBar {"
+        f"background-color: {theme['widget_bg']}; border: 1px solid {theme['border']}; "
+        "border-radius: 3px; height: 16px;"
+        "}"
+        "QProgressBar::chunk {"
+        f"background-color: {theme['progress_secondary']};"
+        "}",
+    )
+
+    log_widget = getattr(central_widget, "log_widget", None)
+    _set(
+        log_widget,
+        "QTextEdit {"
+        f"background-color: {theme['widget_bg']}; color: {theme['text']}; "
+        f"border: 1px solid {theme['border']}; border-radius: 3px; "
+        "font-family: 'Courier New', monospace; font-size: 10px;"
+        "}"
+        "QScrollBar:vertical {"
+        f"background-color: {theme['widget_bg']}; width: 8px; border: none;"
+        "}"
+        "QScrollBar::handle:vertical {"
+        f"background-color: {theme['border']}; border-radius: 4px;"
+        "}"
+        "QScrollBar::handle:vertical:hover {"
+        f"background-color: {theme['border_soft']};"
+        "}",
+    )
+
+    thumbnails_container = getattr(central_widget, "thumbnails_container", None)
+    _set(
+        thumbnails_container,
+        f"background-color: {theme['widget_bg_alt']}; border: 1px solid {theme['border']}; "
+        "border-radius: 3px; QListWidget::item { margin: 0; padding: 0; }",
+    )
+
+
 
 
 
@@ -33,7 +326,7 @@ def build_ui(parent):
     main_layout.setSpacing(0)
     
     # Top section with link input and buttons
-    top_section, site_combo, model_input = create_top_section(central_widget)
+    top_section, site_combo, model_input, site_label, model_label = create_top_section(central_widget)
     main_layout.addWidget(top_section)
     
     # Painel central dividido: esquerda (opções/status/log) e direita (preview)
@@ -176,11 +469,36 @@ def build_ui(parent):
     footer_label.setOpenExternalLinks(True)
     footer_label.setAlignment(Qt.AlignCenter)
     footer_layout.addWidget(footer_label, 1)
+    theme_container = QWidget()
+    theme_layout = QHBoxLayout(theme_container)
+    theme_layout.setContentsMargins(0, 0, 0, 0)
+    theme_layout.setSpacing(6)
+    theme_label = QLabel("Tema:")
+    theme_label.setStyleSheet("color: #ffffff; font-size: 10px;")
+    theme_combo = QComboBox()
+    theme_combo.addItems(["Escuro", "Claro"])
+    theme_combo.setMinimumHeight(22)
+    theme_combo.setMaximumHeight(22)
+    theme_combo.setMinimumWidth(80)
+    theme_combo.setMaximumWidth(90)
+    theme_layout.addWidget(theme_label)
+    theme_layout.addWidget(theme_combo)
+    footer_layout.addWidget(theme_container, 0, Qt.AlignRight)
     main_layout.addWidget(footer)
 
     # Store references for later access
     central_widget.site_combo = site_combo
     central_widget.model_input = model_input
+    central_widget.theme_combo = theme_combo
+    central_widget.site_label = site_label
+    central_widget.model_label = model_label
+    central_widget.theme_label = theme_label
+    central_widget.top_widget = top_section
+    central_widget.log_label = log_label
+    central_widget.preview_label = preview_label
+    central_widget.footer = footer
+    central_widget.footer_label = footer_label
+    central_widget.left_panel = left_panel
     central_widget.labels = labels_dict
     central_widget.checkboxes = checkboxes_dict
     central_widget.progress_bar = progress_bar
@@ -236,6 +554,7 @@ def build_ui(parent):
     if choose_folder_cb is not None:
         choose_folder_cb.stateChanged.connect(lambda _: update_destino_label())
     update_destino_label()
+    apply_theme(central_widget, "dark")
     return central_widget
 
 
@@ -276,6 +595,7 @@ def create_top_section(parent):
     """)
     model_input.setMinimumHeight(32)
     layout.addWidget(model_input, 1)
+
     
     # Checar button - starts disabled
     checar_btn = QPushButton("Checar")
@@ -772,7 +1092,7 @@ def create_top_section(parent):
 
     cancel_btn.clicked.connect(on_cancel_clicked)
     
-    return top_widget, site_combo, model_input
+    return top_widget, site_combo, model_input, site_label, model_label
 
 
 def on_fetch_complete(parent, data, checar_btn, download_btn):
@@ -1409,6 +1729,11 @@ def create_left_panel():
     left_widget.picazor_batch_input = picazor_batch_input
     left_widget.picazor_delay_input = picazor_delay_input
     left_widget.picazor_container = picazor_container
+    left_widget.picazor_title = picazor_title
+    left_widget.threads_label = threads_label
+    left_widget.batch_label = batch_label
+    left_widget.delay_label = delay_label
+    left_widget.separator = separator
     return left_widget, labels_dict, checkboxes_dict
 
 

@@ -4,12 +4,13 @@
     "videos": true,
     "escolher_pasta": false
   },
-  "last_site": "Fapello",
-  "last_model": "kira-pregiato-52",
+  "last_site": "Picazor",
+  "last_model": "kira-pregiato-1",
   "picazor_settings": {
     "threads": 6,
     "batch": 30,
     "delay": 0.5
   },
-  "last_chosen_folder": ""
+  "last_chosen_folder": "",
+  "theme": "dark"
 }

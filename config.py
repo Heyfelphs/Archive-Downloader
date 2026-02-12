@@ -25,6 +25,7 @@ APP_NAME = "Fapello.Downloader"
 VERSION = "4.1"
 
 APP_NAME_COLOR = "#ffbf00"
+DEFAULT_THEME = "dark"
 
 GITHUB_URL = "https://github.com/Djdefrag/Fapello.Downloader"
 TELEGRAM_URL = "https://linktr.ee/j3ngystudio"
