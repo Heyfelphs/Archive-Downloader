@@ -7,9 +7,7 @@
   "last_site": "Picazor",
   "last_model": "kira-pregiato-1",
   "picazor_settings": {
-    "threads": 6,
-    "batch": 30,
-    "delay": 0.5
+    "batch": 30
   },
   "last_chosen_folder": "",
   "theme": "dark"

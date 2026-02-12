@@ -15,9 +15,10 @@ from config import (
     DOWNLOADING_STATUS,
     ERROR_STATUS,
     PICAZOR_CHECK_BATCH_DEFAULT,
-    PICAZOR_CHECK_DELAY_DEFAULT,
-    PICAZOR_CHECK_THREADS_DEFAULT,
 )
+
+FIXED_PICAZOR_THREADS = 4
+FIXED_PICAZOR_DELAY = 0.1
 from core.fapello_client import get_media_info, get_total_files
 from core.picazor_client import PicazorClient
 from core.worker import prepare_filename
@@ -117,6 +118,7 @@ def download_worker_with_progress(
     download_images: bool = True,
     download_videos: bool = True,
     worker=None,
+    download_chunk_size: int | None = None,
 ):
     if worker and getattr(worker, "stop_requested", False):
         return
@@ -202,6 +204,7 @@ def download_worker_with_progress(
                 origin=origin,
                 use_cloudscraper=use_cloudscraper,
                 progress_callback=_file_progress,
+                chunk_size=download_chunk_size or 256 * 1024,
             )
             # Check if file is empty (0 bytes) and delete if so
             if os.path.exists(path) and os.path.getsize(path) == 0:
@@ -239,6 +242,8 @@ def download_orchestrator_with_progress(
     valid_indices: Optional[Iterable[int]] = None,
     link_check_batch: Optional[int] = None,
     link_check_delay: Optional[float] = None,
+    max_items: Optional[int] = None,
+    download_chunk_size: Optional[int] = None,
 ):
     stats = DownloadStats()
     model_name = _extract_model_name(url)
@@ -250,9 +255,9 @@ def download_orchestrator_with_progress(
     if link_check_batch is None:
         link_check_batch = PICAZOR_CHECK_BATCH_DEFAULT
     if link_check_delay is None:
-        link_check_delay = PICAZOR_CHECK_DELAY_DEFAULT
+        link_check_delay = FIXED_PICAZOR_DELAY
     if workers is None:
-        workers = PICAZOR_CHECK_THREADS_DEFAULT
+        workers = FIXED_PICAZOR_THREADS
 
     def worker_wrapper(idx: int):
         if worker and getattr(worker, "stop_requested", False):
@@ -268,6 +273,7 @@ def download_orchestrator_with_progress(
             download_images=download_images,
             download_videos=download_videos,
             worker=worker,
+            download_chunk_size=download_chunk_size,
         )
         return idx
 
@@ -289,6 +295,8 @@ def download_orchestrator_with_progress(
                         batch_size=link_check_batch,
                     )
                 valid_indices = list(valid_indices)
+                if max_items is not None:
+                    valid_indices = valid_indices[:max_items]
                 total_expected = len(valid_indices)
 
                 chunk_size = max(1, workers * 2)
@@ -325,6 +333,8 @@ def download_orchestrator_with_progress(
                         idx += len(chunk)
             else:
                 total_expected = get_total_files(url)
+                if max_items is not None:
+                    total_expected = min(total_expected, max_items)
                 indices = list(range(1, total_expected + 1))
                 chunk_size = max(1, workers * 2)
                 for _ in pool.imap_unordered(worker_wrapper, indices, chunksize=chunk_size):

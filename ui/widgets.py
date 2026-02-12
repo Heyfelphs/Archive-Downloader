@@ -2,22 +2,25 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QCheckBox, QPushButton, QListWidget, QListWidgetItem,
     QFrame, QProgressBar, QTextEdit, QFileDialog,
-    QSpinBox, QDoubleSpinBox, QMessageBox
+    QSpinBox, QDoubleSpinBox, QMessageBox, QGraphicsOpacityEffect,
+    QAbstractSpinBox
 )
-from PySide6.QtCore import Qt, QTimer, QUrl, QSize
+from PySide6.QtCore import Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices, QColor, QPainter
 from pathlib import Path
 from datetime import datetime
 import os
 import html
+import time
 from ui.link_utils import SUPPORTED_SITES, build_url, normalize_site_model, parse_supported_link
 from ui.workers import DownloadWorker, FetchWorker, ThumbnailWorker
 from config import (
     APP_NAME_COLOR,
-    PICAZOR_CHECK_THREADS_DEFAULT,
     PICAZOR_CHECK_BATCH_DEFAULT,
-    PICAZOR_CHECK_DELAY_DEFAULT,
 )
+
+FIXED_PICAZOR_THREADS = 4
+FIXED_PICAZOR_DELAY = 0.1
 
 
 THEMES = {
@@ -414,6 +417,20 @@ def build_ui(parent):
         }
     """)
     log_widget.setMinimumHeight(150)
+    log_widget._log_buffer = []
+    log_widget._log_timer = QTimer(log_widget)
+    log_widget._log_timer.setSingleShot(True)
+    log_widget._log_timer.setInterval(120)
+    def _flush_log_buffer():
+        buffer = log_widget._log_buffer
+        if not buffer:
+            return
+        log_widget.append("<br>".join(buffer))
+        log_widget._log_buffer = []
+        scrollbar = log_widget.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    log_widget._flush_log_buffer = _flush_log_buffer
+    log_widget._log_timer.timeout.connect(_flush_log_buffer)
     left_vbox.addWidget(log_label)
     left_vbox.addWidget(log_widget, 1)
 
@@ -526,7 +543,7 @@ def build_ui(parent):
     # default number of columns for thumbnails grid (fixo em 4)
     central_widget.thumbnails_columns = 4
     # limit how many thumbnails are kept in the grid
-    central_widget.thumbnails_limit = 5
+    central_widget.thumbnails_limit = 12
     # Default download root
     appdata_dir = os.getenv("APPDATA")
     if appdata_dir:
@@ -802,9 +819,9 @@ def create_top_section(parent):
         picazor_batch_input = getattr(parent, "picazor_batch_input", None)
         picazor_delay_input = getattr(parent, "picazor_delay_input", None)
 
-        picazor_threads = picazor_threads_input.value() if picazor_threads_input else PICAZOR_CHECK_THREADS_DEFAULT
+        picazor_threads = FIXED_PICAZOR_THREADS
         picazor_batch = picazor_batch_input.value() if picazor_batch_input else PICAZOR_CHECK_BATCH_DEFAULT
-        picazor_delay = picazor_delay_input.value() if picazor_delay_input else PICAZOR_CHECK_DELAY_DEFAULT
+        picazor_delay = FIXED_PICAZOR_DELAY
 
         # Create worker thread
         worker = FetchWorker(url, picazor_threads, picazor_batch, picazor_delay)
@@ -976,9 +993,9 @@ def create_top_section(parent):
         picazor_batch_input = getattr(parent, "picazor_batch_input", None)
         picazor_delay_input = getattr(parent, "picazor_delay_input", None)
 
-        picazor_threads = picazor_threads_input.value() if picazor_threads_input else PICAZOR_CHECK_THREADS_DEFAULT
+        picazor_threads = FIXED_PICAZOR_THREADS
         picazor_batch = picazor_batch_input.value() if picazor_batch_input else PICAZOR_CHECK_BATCH_DEFAULT
-        picazor_delay = picazor_delay_input.value() if picazor_delay_input else PICAZOR_CHECK_DELAY_DEFAULT
+        picazor_delay = FIXED_PICAZOR_DELAY
 
         # Create download worker thread
         # For Picazor, pass total_files (indices count) even though real file count is unknown
@@ -1179,6 +1196,13 @@ def on_fetch_error(parent, error, checar_btn):
 
 def on_download_progress_update(parent, data):
     """Handle detailed download progress updates."""
+    def _throttled_update(key: str, interval_ms: int = 100) -> bool:
+        now = time.monotonic()
+        last = getattr(parent, key, 0.0)
+        if (now - last) * 1000.0 < interval_ms:
+            return False
+        setattr(parent, key, now)
+        return True
     # (Removido: salvar summary para análise manual)
     if data["type"] == "file_start":
         # Arquivo iniciou o download
@@ -1196,6 +1220,8 @@ def on_download_progress_update(parent, data):
     elif data["type"] == "file_progress":
         index = data.get("index")
         if getattr(parent, "_current_file_index", None) != index:
+            return
+        if not _throttled_update("_last_file_progress_ts", 120):
             return
         bytes_downloaded = data.get("bytes_downloaded", 0)
         total_bytes = data.get("total_bytes")
@@ -1221,9 +1247,10 @@ def on_download_progress_update(parent, data):
         
         # Atualizar progress bar usando processed_count para consistência
         parent.progress_bar.setValue(processed)
-        
+
         # Atualizar label de progresso
-        parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
+        if _throttled_update("_last_progress_label_ts", 120) or percent >= 100:
+            parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
         
         # Atualizar label de arquivo
         parent.labels["arquivo"].setText(f"Arquivo: {filename}")
@@ -1270,7 +1297,8 @@ def on_download_progress_update(parent, data):
         if total == 0:
             total = parent.progress_bar.maximum()
         parent.progress_bar.setValue(processed)
-        parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
+        if _throttled_update("_last_progress_label_ts", 120):
+            parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
         if getattr(parent, "_current_file_index", None) == data.get("index"):
             if hasattr(parent, "file_progress_bar"):
                 parent.file_progress_bar.setRange(0, 100)
@@ -1287,7 +1315,8 @@ def on_download_progress_update(parent, data):
         if total == 0:
             total = parent.progress_bar.maximum()
         parent.progress_bar.setValue(processed)
-        parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
+        if _throttled_update("_last_progress_label_ts", 120):
+            parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
         if getattr(parent, "_current_file_index", None) == data.get("index"):
             if hasattr(parent, "file_progress_bar"):
                 parent.file_progress_bar.setRange(0, 100)
@@ -1475,9 +1504,13 @@ def add_thumbnail(parent, file_path):
     item.setData(Qt.UserRole, file_path)
     
     if ext in ['.mp4', '.avi', '.mov', '.mkv']:
-        # Insert a placeholder icon immediately, then update it asynchronously.
-        item.setIcon(QIcon(_create_video_placeholder(thumb_size)))
+        # Insert a placeholder widget immediately, then update it asynchronously.
+        placeholder = _create_video_placeholder(thumb_size)
+        widget = _create_thumbnail_widget(placeholder, thumb_size)
         thumb_list.insertItem(0, item)
+        thumb_list.setItemWidget(item, widget)
+        _fade_in_widget(widget)
+        _prune_thumbnails(thumb_list, getattr(parent, "thumbnails_limit", 0))
 
         # Create and configure worker before connecting signals
         thumbnail_worker = ThumbnailWorker(file_path, thumb_size)
@@ -1509,14 +1542,17 @@ def add_thumbnail(parent, file_path):
         if pix.isNull():
             pix = QPixmap(thumb_size, thumb_size)
             pix.fill(Qt.darkGray)
-        
+
         side = min(pix.width(), pix.height())
         x = (pix.width() - side) // 2
         y = (pix.height() - side) // 2
         pix = pix.copy(x, y, side, side)
         pix = pix.scaled(thumb_size, thumb_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        item.setIcon(QIcon(pix))
+        widget = _create_thumbnail_widget(pix, thumb_size)
         thumb_list.insertItem(0, item)
+        thumb_list.setItemWidget(item, widget)
+        _fade_in_widget(widget)
+        _prune_thumbnails(thumb_list, getattr(parent, "thumbnails_limit", 0))
 
 
 def _create_video_placeholder(thumb_size: int):
@@ -1531,12 +1567,51 @@ def _create_video_placeholder(thumb_size: int):
     return pix
 
 
+def _create_thumbnail_widget(pixmap: QPixmap, thumb_size: int) -> QLabel:
+    label = QLabel()
+    label.setFixedSize(thumb_size, thumb_size)
+    label.setAlignment(Qt.AlignCenter)
+    label.setPixmap(pixmap)
+    return label
+
+
+def _fade_in_widget(widget: QWidget, duration_ms: int = 220):
+    effect = QGraphicsOpacityEffect(widget)
+    widget.setGraphicsEffect(effect)
+    effect.setOpacity(0.0)
+
+    anim = QPropertyAnimation(effect, b"opacity", widget)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setDuration(duration_ms)
+    anim.setEasingCurve(QEasingCurve.OutCubic)
+    widget._fade_anim = anim
+    anim.start()
+
+
+def _prune_thumbnails(thumb_list: QListWidget, limit: int):
+    if not limit or limit <= 0:
+        return
+    while thumb_list.count() > limit:
+        item = thumb_list.takeItem(thumb_list.count() - 1)
+        if item is None:
+            break
+        widget = thumb_list.itemWidget(item)
+        if widget is not None:
+            widget.deleteLater()
+
+
 def _update_thumbnail_icon(thumb_list, file_path, icon):
     """Update thumbnail icon once it's ready."""
     for i in range(thumb_list.count()):
         item = thumb_list.item(i)
         if item.data(Qt.UserRole) == file_path:
-            item.setIcon(icon)
+            widget = thumb_list.itemWidget(item)
+            if isinstance(widget, QLabel):
+                pix = icon.pixmap(widget.width(), widget.height())
+                widget.setPixmap(pix)
+            else:
+                item.setIcon(icon)
             break
 
 
@@ -1571,11 +1646,16 @@ def add_log_message(log_widget, message, error=False, warning=False):
     escaped_message = html.escape(message)
     
     # Linha inteira colorida
-    log_widget.append(f"<span style='color:{color};'><b>{tag}</b> {escaped_message}</span>")
+    html_line = f"<span style='color:{color};'><b>{tag}</b> {escaped_message}</span>"
 
-    # Auto-scroll to bottom
-    scrollbar = log_widget.verticalScrollBar()
-    scrollbar.setValue(scrollbar.maximum())
+    if hasattr(log_widget, "_log_buffer") and hasattr(log_widget, "_log_timer"):
+        log_widget._log_buffer.append(html_line)
+        if not log_widget._log_timer.isActive():
+            log_widget._log_timer.start()
+    else:
+        log_widget.append(html_line)
+        scrollbar = log_widget.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
 def create_left_panel():
     """Create the left panel with checkboxes and info."""
@@ -1640,9 +1720,15 @@ def create_left_panel():
     threads_label.setStyleSheet(info_style)
     picazor_threads_input = QSpinBox()
     picazor_threads_input.setRange(1, 32)
-    picazor_threads_input.setValue(PICAZOR_CHECK_THREADS_DEFAULT)
+    picazor_threads_input.setValue(FIXED_PICAZOR_THREADS)
     picazor_threads_input.setStyleSheet(spin_style)
-    picazor_threads_input.setToolTip("Número de threads na checagem de links do Picazor")
+    picazor_threads_input.setToolTip("Número de threads na checagem de links do Picazor (fixo)")
+    picazor_threads_input.setEnabled(False)
+    picazor_threads_input.setReadOnly(True)
+    picazor_threads_input.setButtonSymbols(QAbstractSpinBox.NoButtons)
+    picazor_threads_input.setFocusPolicy(Qt.NoFocus)
+    threads_label.setVisible(False)
+    picazor_threads_input.setVisible(False)
     threads_layout.addWidget(threads_label)
     threads_layout.addWidget(picazor_threads_input)
     picazor_layout.addLayout(threads_layout)
@@ -1666,9 +1752,15 @@ def create_left_panel():
     picazor_delay_input.setRange(0.0, 5.0)
     picazor_delay_input.setSingleStep(0.1)
     picazor_delay_input.setDecimals(2)
-    picazor_delay_input.setValue(PICAZOR_CHECK_DELAY_DEFAULT)
+    picazor_delay_input.setValue(FIXED_PICAZOR_DELAY)
     picazor_delay_input.setStyleSheet(spin_style)
-    picazor_delay_input.setToolTip("Delay entre rodadas de checagem (segundos)")
+    picazor_delay_input.setToolTip("Delay entre rodadas de checagem (segundos) (fixo)")
+    picazor_delay_input.setEnabled(False)
+    picazor_delay_input.setReadOnly(True)
+    picazor_delay_input.setButtonSymbols(QAbstractSpinBox.NoButtons)
+    picazor_delay_input.setFocusPolicy(Qt.NoFocus)
+    delay_label.setVisible(False)
+    picazor_delay_input.setVisible(False)
     delay_layout.addWidget(delay_label)
     delay_layout.addWidget(picazor_delay_input)
     picazor_layout.addLayout(delay_layout)

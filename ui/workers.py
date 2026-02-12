@@ -5,10 +5,13 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QIcon, QPixmap, QColor, QPainter, QImage, QFont
 
 from config import (
-    PICAZOR_CHECK_THREADS_DEFAULT,
     PICAZOR_CHECK_BATCH_DEFAULT,
-    PICAZOR_CHECK_DELAY_DEFAULT,
 )
+
+FIXED_PICAZOR_THREADS = 4
+FIXED_PICAZOR_DELAY = 0.1
+FIXED_FAPELLO_THREADS = 3
+FIXED_DOWNLOAD_CHUNK_SIZE = 256 * 1024
 from core.fapello_client import get_total_files as get_fapello_total_files
 from core.services.download_service import download_orchestrator_with_progress
 
@@ -161,9 +164,9 @@ class DownloadWorker(QThread):
         total_files: int,
         target_dir: Path,
         valid_indices=None,
-        picazor_threads: int = PICAZOR_CHECK_THREADS_DEFAULT,
+        picazor_threads: int = FIXED_PICAZOR_THREADS,
         picazor_batch: int = PICAZOR_CHECK_BATCH_DEFAULT,
-        picazor_delay: float = PICAZOR_CHECK_DELAY_DEFAULT,
+        picazor_delay: float = FIXED_PICAZOR_DELAY,
     ):
         super().__init__()
         self.url = url
@@ -249,7 +252,7 @@ class DownloadWorker(QThread):
         try:
             download_orchestrator_with_progress(
                 self.url,
-                workers=self.picazor_threads if "picazor.com" in self.url else 4,
+                workers=self.picazor_threads if "picazor.com" in self.url else FIXED_FAPELLO_THREADS,
                 progress_callback=self.progress_callback,
                 target_dir=self.target_dir,
                 download_images=self.download_images,
@@ -258,6 +261,7 @@ class DownloadWorker(QThread):
                 valid_indices=self.valid_indices,
                 link_check_batch=self.picazor_batch,
                 link_check_delay=self.picazor_delay,
+                download_chunk_size=FIXED_DOWNLOAD_CHUNK_SIZE,
             )
             self.finished.emit()
         except Exception as exc:

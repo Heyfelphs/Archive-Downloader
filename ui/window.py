@@ -103,10 +103,9 @@ class AppWindow(QMainWindow):
             from config import (
                 load_ui_state,
                 DEFAULT_THEME,
-                PICAZOR_CHECK_THREADS_DEFAULT,
                 PICAZOR_CHECK_BATCH_DEFAULT,
-                PICAZOR_CHECK_DELAY_DEFAULT,
             )
+            from ui.widgets import FIXED_PICAZOR_THREADS, FIXED_PICAZOR_DELAY
             state = load_ui_state()
             if not isinstance(state, dict):
                 state = {}
@@ -160,11 +159,7 @@ class AppWindow(QMainWindow):
 
             
             if hasattr(central_widget, 'picazor_threads_input'):
-                threads_value = self._validate_int_setting(
-                    picazor_state.get('threads'), 
-                    PICAZOR_CHECK_THREADS_DEFAULT
-                )
-                central_widget.picazor_threads_input.setValue(threads_value)
+                central_widget.picazor_threads_input.setValue(FIXED_PICAZOR_THREADS)
             
             if hasattr(central_widget, 'picazor_batch_input'):
                 batch_value = self._validate_int_setting(
@@ -174,11 +169,7 @@ class AppWindow(QMainWindow):
                 central_widget.picazor_batch_input.setValue(batch_value)
             
             if hasattr(central_widget, 'picazor_delay_input'):
-                delay_value = self._validate_float_setting(
-                    picazor_state.get('delay'), 
-                    PICAZOR_CHECK_DELAY_DEFAULT
-                )
-                central_widget.picazor_delay_input.setValue(delay_value)
+                central_widget.picazor_delay_input.setValue(FIXED_PICAZOR_DELAY)
         except Exception as e:
             print(f"Erro ao restaurar estado da UI: {e}")
 
@@ -209,19 +200,9 @@ class AppWindow(QMainWindow):
             from config import save_ui_state
             central = self.centralWidget()
             picazor_settings = {}
-            if hasattr(central, 'picazor_threads_input'):
-                try:
-                    picazor_settings['threads'] = int(central.picazor_threads_input.value())
-                except (ValueError, TypeError):
-                    pass
             if hasattr(central, 'picazor_batch_input'):
                 try:
                     picazor_settings['batch'] = int(central.picazor_batch_input.value())
-                except (ValueError, TypeError):
-                    pass
-            if hasattr(central, 'picazor_delay_input'):
-                try:
-                    picazor_settings['delay'] = float(central.picazor_delay_input.value())
                 except (ValueError, TypeError):
                     pass
 

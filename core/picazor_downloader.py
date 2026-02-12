@@ -1,10 +1,11 @@
 # core/picazor_downloader.py
 
 from config import (
-    PICAZOR_CHECK_THREADS_DEFAULT,
     PICAZOR_CHECK_BATCH_DEFAULT,
-    PICAZOR_CHECK_DELAY_DEFAULT,
 )
+
+FIXED_PICAZOR_THREADS = 4
+FIXED_PICAZOR_DELAY = 0.1
 from core.services.download_service import download_orchestrator_with_progress
 
 
@@ -21,11 +22,11 @@ def picazor_download_orchestrator(
     worker=None,  # Referência ao worker para verificar pausa/stop
 ):
     if workers is None:
-        workers = PICAZOR_CHECK_THREADS_DEFAULT
+        workers = FIXED_PICAZOR_THREADS
     if link_check_batch is None:
         link_check_batch = PICAZOR_CHECK_BATCH_DEFAULT
     if link_check_delay is None:
-        link_check_delay = PICAZOR_CHECK_DELAY_DEFAULT
+        link_check_delay = FIXED_PICAZOR_DELAY
 
     return download_orchestrator_with_progress(
         url,
