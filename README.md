@@ -129,15 +129,6 @@ O aplicativo usa configurações fixas otimizadas via benchmarking automatizado:
 
 Essas configurações foram determinadas através de 30 testes automatizados para garantir a melhor performance.
 
-## 🧪 Benchmarking
-
-Para executar seus próprios benchmarks:
-
-```bash
-python tools/benchmark_download.py --fapello <url> --picazor <url> --max-items 30 --output ./benchmarks
-```
-
-Os resultados serão salvos em `benchmarks/results.csv`.
 
 ## 📊 Características Técnicas
 
