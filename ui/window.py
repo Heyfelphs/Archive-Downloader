@@ -124,6 +124,12 @@ class AppWindow(QMainWindow):
             picazor_state = state.get('picazor_settings', {})
             if not isinstance(picazor_state, dict):
                 picazor_state = {}
+
+            # Restaurar ultima pasta escolhida (usada quando "Escolher pasta" estiver marcado)
+            last_folder = state.get('last_chosen_folder')
+            if isinstance(last_folder, str) and last_folder.strip():
+                central_widget.last_chosen_folder = last_folder
+
             
             if hasattr(central_widget, 'picazor_threads_input'):
                 threads_value = self._validate_int_setting(
@@ -196,6 +202,7 @@ class AppWindow(QMainWindow):
                 'last_site': getattr(central, 'site_combo', None).currentText() if hasattr(central, 'site_combo') else '',
                 'last_model': getattr(central, 'model_input', None).text() if hasattr(central, 'model_input') else '',
                 'picazor_settings': picazor_settings,
+                'last_chosen_folder': getattr(central, 'last_chosen_folder', ''),
             }
             save_ui_state(state)
         except Exception as e:

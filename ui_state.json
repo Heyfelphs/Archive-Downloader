@@ -1,13 +1,15 @@
 {
   "checkboxes": {
     "imagens": true,
-    "videos": true
+    "videos": true,
+    "escolher_pasta": false
   },
   "last_site": "Fapello",
-  "last_model": "danievedo-1",
+  "last_model": "kira-pregiato-52",
   "picazor_settings": {
     "threads": 6,
     "batch": 30,
     "delay": 0.5
-  }
+  },
+  "last_chosen_folder": ""
 }

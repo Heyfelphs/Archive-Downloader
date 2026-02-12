@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, QUrl, QSize
 from PySide6.QtGui import QFont, QPixmap, QIcon, QDesktopServices, QColor, QPainter
 from pathlib import Path
+from datetime import datetime
 import os
 import html
 from ui.link_utils import SUPPORTED_SITES, build_url, normalize_site_model, parse_supported_link
@@ -161,6 +162,22 @@ def build_ui(parent):
 
     main_layout.addWidget(center_panel, 1)
 
+    # Footer
+    footer = QFrame()
+    footer.setStyleSheet("background-color: #1e1e1e; border-top: 1px solid #333;")
+    footer_layout = QHBoxLayout(footer)
+    footer_layout.setContentsMargins(10, 6, 10, 6)
+    footer_layout.setSpacing(6)
+    year = datetime.now().year
+    footer_label = QLabel(
+        f"Copyright {year} <a href='https://github.com/Heyfelphs'>Heyfelphs</a> (GitHub)"
+    )
+    footer_label.setStyleSheet("color: #888888; font-size: 10px;")
+    footer_label.setOpenExternalLinks(True)
+    footer_label.setAlignment(Qt.AlignCenter)
+    footer_layout.addWidget(footer_label, 1)
+    main_layout.addWidget(footer)
+
     # Store references for later access
     central_widget.site_combo = site_combo
     central_widget.model_input = model_input
@@ -193,9 +210,32 @@ def build_ui(parent):
     # limit how many thumbnails are kept in the grid
     central_widget.thumbnails_limit = 5
     # Default download root
-    central_widget.download_root = Path("catalog") / "models"
+    appdata_dir = os.getenv("APPDATA")
+    if appdata_dir:
+        default_root = Path(appdata_dir) / "Hey_Felphs Archive-Downloader"
+    else:
+        default_root = Path.home() / "Hey_Felphs Archive-Downloader"
+    default_root.mkdir(parents=True, exist_ok=True)
+    central_widget.download_root = default_root
     if "destino" in labels_dict:
-        labels_dict["destino"].setText(f"Destino: {central_widget.download_root}")
+        labels_dict["destino"].setVisible(True)
+
+    def update_destino_label():
+        if "destino" not in labels_dict:
+            return
+        choose_folder_cb = central_widget.checkboxes.get("escolher_pasta")
+        if choose_folder_cb is not None and choose_folder_cb.isChecked():
+            base_dir = getattr(central_widget, "download_root", Path("catalog") / "models")
+            labels_dict["destino"].setText(f"Destino: {base_dir}")
+        else:
+            labels_dict["destino"].setText("Destino: Pasta Padrão")
+        labels_dict["destino"].setVisible(True)
+
+    central_widget._update_destino_label = update_destino_label
+    choose_folder_cb = central_widget.checkboxes.get("escolher_pasta")
+    if choose_folder_cb is not None:
+        choose_folder_cb.stateChanged.connect(lambda _: update_destino_label())
+    update_destino_label()
     return central_widget
 
 
@@ -320,6 +360,34 @@ def create_top_section(parent):
     """)
     layout.addWidget(pause_btn)
     parent.pause_btn = pause_btn
+
+    # Cancelar button (mostrado apenas quando pausado)
+    cancel_btn = QPushButton("Cancelar")
+    cancel_btn.setMinimumWidth(90)
+    cancel_btn.setMinimumHeight(32)
+    cancel_btn.setEnabled(False)
+    cancel_btn.setVisible(False)
+    cancel_btn.setStyleSheet("""
+        QPushButton {
+            background-color: #7a1f1f;
+            color: #ffffff;
+            border: none;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        QPushButton:hover:!disabled {
+            background-color: #8f2a2a;
+        }
+        QPushButton:pressed {
+            background-color: #5c1717;
+        }
+        QPushButton:disabled {
+            background-color: #999;
+            color: #666;
+        }
+    """)
+    layout.addWidget(cancel_btn)
+    parent.cancel_btn = cancel_btn
     
     # Abrir pasta button
     open_folder_btn = QPushButton("Abrir pasta")
@@ -363,9 +431,9 @@ def create_top_section(parent):
             download_btn.setEnabled(False)
         if hasattr(parent, "open_folder_btn"):
             parent.open_folder_btn.setEnabled(False)
-        # Esconder label destino quando novo link é inserido
-        if hasattr(parent, "labels") and "destino" in parent.labels:
-            parent.labels["destino"].setVisible(False)
+        # Manter label destino visivel com base no modo atual
+        if hasattr(parent, "_update_destino_label"):
+            parent._update_destino_label()
         # Esconder barra de progresso quando novo link é inserido
         if hasattr(parent, "progress_bar"):
             parent.progress_bar.setVisible(False)
@@ -430,6 +498,7 @@ def create_top_section(parent):
     
     # Connect download button to download function
     def on_download_clicked():
+        parent._download_started = True
         site_label, model_name = normalize_site_model(site_combo, model_input)
         url = build_url(site_label, model_name)
         if not url:
@@ -445,9 +514,7 @@ def create_top_section(parent):
             parent.labels["status"].setText("Status: Selecione imagens ou vídeos!")
             return
 
-        # Pergunta a pasta de destino antes de iniciar o download
-
-        # Tenta usar a pasta de imagens do usuário como padrão
+        # Define a pasta de destino (perguntar opcionalmente)
         pictures_dir = Path(os.path.expanduser(r"~")) / "Pictures"
         if not pictures_dir.exists():
             pictures_dir = Path.home()
@@ -457,16 +524,32 @@ def create_top_section(parent):
         suggested_dir = base_dir / site_label
         if model_name:
             suggested_dir = suggested_dir / model_name
-        folder = QFileDialog.getExistingDirectory(parent, "Escolha a pasta para salvar o download", str(suggested_dir))
-        if not folder:
-            parent.labels["status"].setText("Status: Download cancelado pelo usuário.")
-            checar_btn.setEnabled(True)
-            download_btn.setEnabled(True)
-            return
+
+        choose_folder = parent.checkboxes.get("escolher_pasta")
+        if choose_folder is not None and choose_folder.isChecked():
+            last_chosen = getattr(parent, "last_chosen_folder", "")
+            if last_chosen and Path(last_chosen).exists():
+                suggested_dir = Path(last_chosen)
+            folder = QFileDialog.getExistingDirectory(
+                parent,
+                "Escolha a pasta para salvar o download",
+                str(suggested_dir),
+            )
+            if not folder:
+                parent.labels["status"].setText("Status: Download cancelado pelo usuário.")
+                checar_btn.setEnabled(True)
+                download_btn.setEnabled(True)
+                return
+            base_dir = Path(folder)
+            parent.last_chosen_folder = str(base_dir)
+            if hasattr(parent, "labels") and "destino" in parent.labels:
+                parent.labels["destino"].setText(f"Destino: {base_dir}")
+                parent.labels["destino"].setVisible(True)
+
         # Cria subpasta com nome da modelo
         parts = [p for p in url.split("/") if p]
         model_name = parts[-1] if parts else "modelo"
-        target_dir = Path(folder) / site_label / model_name
+        target_dir = base_dir / site_label / model_name
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
             test_file = target_dir / "__fapello_test_perm.txt"
@@ -479,6 +562,7 @@ def create_top_section(parent):
             checar_btn.setEnabled(True)
             download_btn.setEnabled(True)
             return
+        target_dir = target_dir.resolve()
         parent.current_download_dir = target_dir
         parent.last_download_dir = target_dir
         if hasattr(parent, "labels") and "destino" in parent.labels:
@@ -516,6 +600,9 @@ def create_top_section(parent):
             parent.pause_btn.setVisible(True)
             parent.pause_btn.setEnabled(True)
             parent.pause_btn.setText("Pausar")
+        if hasattr(parent, "cancel_btn"):
+            parent.cancel_btn.setVisible(False)
+            parent.cancel_btn.setEnabled(False)
         download_types = []
         if download_images:
             download_types.append("imagens")
@@ -531,13 +618,18 @@ def create_top_section(parent):
         # Limpar thumbnails anteriores
         parent.thumbnails_container.clear()
         
-        # Disable download button during download
+        # Hide download button during download
         download_btn.setEnabled(False)
+        download_btn.setVisible(False)
         checar_btn.setEnabled(False)
         if hasattr(parent, "open_folder_btn"):
             parent.open_folder_btn.setEnabled(False)
+        if hasattr(parent, "cancel_btn"):
+            parent.cancel_btn.setVisible(False)
+            parent.cancel_btn.setEnabled(False)
         parent._download_complete_called = False
         parent.labels["status"].setText("Status: Baixando...")
+        parent._download_canceled = False
         
         # Reset progress bar com total esperado
         if is_picazor:
@@ -611,9 +703,27 @@ def create_top_section(parent):
     def on_open_folder_clicked():
         target_dir = getattr(parent, "last_download_dir", None)
         if not target_dir:
-            add_log_message(parent.log_widget, "Nenhuma pasta para abrir ainda.", warning=True)
+            target_dir = getattr(parent, "current_download_dir", None)
+
+        if target_dir and not Path(target_dir).exists():
+            target_dir = None
+
+        if not target_dir:
+            base_dir = getattr(parent, "download_root", None)
+            if base_dir and Path(base_dir).exists():
+                target_dir = Path(base_dir)
+
+        if not target_dir:
+            add_log_message(parent.log_widget, "Nenhuma pasta disponível para abrir.", warning=True)
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_dir)))
+
+        target_dir = Path(target_dir).resolve()
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_dir)))
+        if not opened:
+            try:
+                os.startfile(str(target_dir))
+            except Exception:
+                add_log_message(parent.log_widget, "Falha ao abrir a pasta no Explorer.", warning=True)
 
     open_folder_btn.clicked.connect(on_open_folder_clicked)
     
@@ -628,10 +738,16 @@ def create_top_section(parent):
                 download_worker.pause()
                 pause_btn.setText("Retomar")
                 add_log_message(parent.log_widget, "Download pausado.", warning=True)
+                if hasattr(parent, "cancel_btn"):
+                    parent.cancel_btn.setVisible(True)
+                    parent.cancel_btn.setEnabled(True)
             elif pause_btn.text() == "Retomar":
                 download_worker.resume()
                 pause_btn.setText("Pausar")
                 add_log_message(parent.log_widget, "Download retomado.")
+                if hasattr(parent, "cancel_btn"):
+                    parent.cancel_btn.setVisible(False)
+                    parent.cancel_btn.setEnabled(False)
         # Handle stop for fetch (no pause/resume support for fetch)
         elif fetch_worker and pause_btn.text() == "Cancelar":
             fetch_worker.stop()
@@ -639,6 +755,22 @@ def create_top_section(parent):
             add_log_message(parent.log_widget, "Análise cancelada.", warning=True)
     
     pause_btn.clicked.connect(on_pause_clicked)
+
+    def on_cancel_clicked():
+        download_worker = getattr(parent, "download_worker", None)
+        if download_worker:
+            parent._download_canceled = True
+            download_worker.stop()
+            parent.labels["status"].setText("Status: Cancelado")
+            add_log_message(parent.log_widget, "Download cancelado.", warning=True)
+        if hasattr(parent, "cancel_btn"):
+            parent.cancel_btn.setVisible(False)
+            parent.cancel_btn.setEnabled(False)
+        if hasattr(parent, "pause_btn"):
+            parent.pause_btn.setVisible(False)
+            parent.pause_btn.setEnabled(False)
+
+    cancel_btn.clicked.connect(on_cancel_clicked)
     
     return top_widget, site_combo, model_input
 
@@ -684,12 +816,29 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
     # Enable download button and show it
     download_btn.setVisible(True)
     download_btn.setEnabled(True)
+
+    # Perguntar se deseja iniciar o download imediatamente
+    reply = QMessageBox.question(
+        parent,
+        "Iniciar download",
+        "Checagem concluida. Deseja iniciar o download agora?",
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.Yes,
+    )
+    if reply == QMessageBox.Yes:
+        download_btn.click()
     # Keep checar button disabled until link changes
     
     # Ocultar botão de pausa ao terminar a análise
-    if hasattr(parent, "pause_btn"):
+    if hasattr(parent, "pause_btn") and not getattr(parent, "_download_started", False):
         parent.pause_btn.setVisible(False)
         parent.pause_btn.setEnabled(False)
+    if hasattr(parent, "cancel_btn") and not getattr(parent, "_download_started", False):
+        parent.cancel_btn.setVisible(False)
+        parent.cancel_btn.setEnabled(False)
+    if hasattr(parent, "cancel_btn"):
+        parent.cancel_btn.setVisible(False)
+        parent.cancel_btn.setEnabled(False)
 
 
 def on_fetch_error(parent, error, checar_btn):
@@ -873,6 +1022,30 @@ def on_download_complete(parent, checar_btn, download_btn):
     if getattr(parent, "_download_complete_called", False):
         return
 
+    parent._download_started = False
+
+    if getattr(parent, "_download_canceled", False):
+        parent._download_canceled = False
+        parent.labels["status"].setText("Status: Cancelado")
+        checar_btn.setEnabled(True)
+        download_btn.setEnabled(True)
+        download_btn.setVisible(True)
+        if hasattr(parent, "open_folder_btn"):
+            parent.open_folder_btn.setEnabled(False)
+        if hasattr(parent, "pause_btn"):
+            parent.pause_btn.setVisible(False)
+            parent.pause_btn.setEnabled(False)
+        if hasattr(parent, "cancel_btn"):
+            parent.cancel_btn.setVisible(False)
+            parent.cancel_btn.setEnabled(False)
+        if hasattr(parent, "progress_bar"):
+            parent.progress_bar.setVisible(False)
+        if hasattr(parent, "progress_label"):
+            parent.progress_label.setVisible(False)
+        if hasattr(parent, "file_progress_bar"):
+            parent.file_progress_bar.setVisible(False)
+        return
+
     # Mensagem de confirmação com quantidade de arquivos baixados:
     # usar, quando disponível, a contagem de sucessos (ex.: armazenada em parent.download_success_count)
     arquivos = getattr(parent, "download_success_count", parent.progress_bar.value())
@@ -900,6 +1073,7 @@ def on_download_complete(parent, checar_btn, download_btn):
 
     # Desabilitar botão de download após conclusão
     download_btn.setEnabled(False)
+    download_btn.setVisible(True)
     checar_btn.setEnabled(True)
     if hasattr(parent, "open_folder_btn"):
         parent.open_folder_btn.setEnabled(True)
@@ -908,6 +1082,9 @@ def on_download_complete(parent, checar_btn, download_btn):
     if hasattr(parent, "pause_btn"):
         parent.pause_btn.setVisible(False)
         parent.pause_btn.setEnabled(False)
+    if hasattr(parent, "cancel_btn"):
+        parent.cancel_btn.setVisible(False)
+        parent.cancel_btn.setEnabled(False)
     
     # Ocultar barra de progresso e label ao terminar
     if hasattr(parent, "progress_bar"):
@@ -923,9 +1100,11 @@ def on_download_complete(parent, checar_btn, download_btn):
 
 def on_download_error(parent, error, checar_btn, download_btn):
     """Handle download errors and re-enable buttons."""
+    parent._download_started = False
     parent.labels["status"].setText(f"Status: Erro - {error}")
     add_log_message(parent.log_widget, f"✗ ERRO: {error}", error=True)
     download_btn.setEnabled(False)
+    download_btn.setVisible(True)
     checar_btn.setEnabled(True)
     if hasattr(parent, "open_folder_btn"):
         parent.open_folder_btn.setEnabled(False)
@@ -934,6 +1113,9 @@ def on_download_error(parent, error, checar_btn, download_btn):
     if hasattr(parent, "pause_btn"):
         parent.pause_btn.setVisible(False)
         parent.pause_btn.setEnabled(False)
+    if hasattr(parent, "cancel_btn"):
+        parent.cancel_btn.setVisible(False)
+        parent.cancel_btn.setEnabled(False)
     
     # Ocultar barra de progresso e label ao falhar
     if hasattr(parent, "progress_bar"):
@@ -1104,6 +1286,12 @@ def create_left_panel():
     baixar_videos.setStyleSheet(checkbox_style)
     layout.addWidget(baixar_videos)
 
+    escolher_pasta = QCheckBox("Escolher pasta")
+    escolher_pasta.setChecked(False)
+    escolher_pasta.setStyleSheet(checkbox_style)
+    escolher_pasta.setToolTip("Se marcado, pergunta a pasta de destino antes do download")
+    layout.addWidget(escolher_pasta)
+
     # Container para Picazor settings (será mostrado/escondido conforme site selecionado)
     picazor_container = QWidget()
     picazor_layout = QVBoxLayout(picazor_container)
@@ -1214,7 +1402,8 @@ def create_left_panel():
     # Create checkboxes dictionary for external access (sem análise manual)
     checkboxes_dict = {
         "imagens": baixar_imagens,
-        "videos": baixar_videos
+        "videos": baixar_videos,
+        "escolher_pasta": escolher_pasta,
     }
     left_widget.picazor_threads_input = picazor_threads_input
     left_widget.picazor_batch_input = picazor_batch_input
