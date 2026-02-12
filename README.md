@@ -56,11 +56,10 @@ Archive-Downloader/
 │   ├── window.py               # Janela principal
 │   ├── workers.py              # Qt Workers (fetch/download/thumbnail)
 │   └── link_utils.py           # Utilitários de links
-├── utils/
-│   ├── filesystem.py           # Operações de arquivo
-│   └── network.py              # Utilitários de rede
-└── tools/
-    └── benchmark_download.py   # Script de benchmarking
+└── utils/
+    ├── filesystem.py           # Operações de arquivo
+    └── network.py              # Utilitários de rede
+
 ```
 
 ## 🚀 Instalação
