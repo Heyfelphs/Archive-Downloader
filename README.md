@@ -2,6 +2,16 @@
 
 **Archive Downloader** é um aplicativo desktop moderno desenvolvido em Python para download automatizado de arquivos multimídia de sites como Fapello e Picazor. Com uma interface gráfica intuitiva construída em PySide6 (Qt6), oferece controle total sobre o processo de download com recursos avançados de otimização e personalização.
 
+## 💾 Download Rápido
+
+**Não quer configurar Python?** Baixe o executável standalone para Windows:
+
+👉 **[Veja as releases](../../releases)** - Baixe `ArchiveDownloader.exe` e execute direto!
+
+- ✅ Não requer instalação
+- ✅ Não requer Python
+- ✅ Pronto para usar
+
 ## ✨ Funcionalidades
 
 ### Downloads Inteligentes
@@ -114,6 +124,29 @@ Para rodar os testes automatizados:
 ```bash
 pytest
 ```
+
+## 🏗️ Build do Executável
+
+Para criar um executável standalone do projeto:
+
+1. **Instale o PyInstaller**
+   ```bash
+   pip install pyinstaller
+   ```
+
+2. **Execute o script de build**
+   ```bash
+   .\build.ps1
+   ```
+
+   Ou manualmente:
+   ```bash
+   pyinstaller archive_downloader.spec --clean --noconfirm
+   ```
+
+3. **O executável estará em:** `dist\ArchiveDownloader.exe`
+
+Para mais detalhes sobre releases, veja [RELEASE.md](RELEASE.md).
 
 ## 📖 Como Usar
 
