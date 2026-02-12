@@ -307,7 +307,7 @@ def download_orchestrator_with_progress(
                         was_cancelled = True
                         raise KeyboardInterrupt("Download stopped by user")
 
-                if not (worker and getattr(worker, "stop_requested", False)):
+                if valid_indices and not (worker and getattr(worker, "stop_requested", False)):
                     consecutive_skips = 0
                     idx = max(valid_indices) + 1 if valid_indices else 1
                     max_idx = idx + 1000

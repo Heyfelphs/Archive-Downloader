@@ -221,7 +221,6 @@ def apply_theme(central_widget, theme_name: str):
     )
 
     _set(getattr(central_widget, "checar_btn", None), button_style)
-    _set(getattr(central_widget, "open_folder_btn", None), button_style)
     _set(getattr(central_widget, "download_btn", None), accent_button_style)
     _set(getattr(central_widget, "pause_btn", None), pause_button_style)
     _set(getattr(central_widget, "cancel_btn", None), cancel_button_style)
@@ -264,8 +263,6 @@ def apply_theme(central_widget, theme_name: str):
     separator = getattr(left_panel, "separator", None)
     _set(separator, f"background-color: {theme['border']};")
 
-    progress_label = getattr(central_widget, "progress_label", None)
-    _set(progress_label, f"color: {theme['text']}; font-size: 11px;")
     progress_bar = getattr(central_widget, "progress_bar", None)
     _set(
         progress_bar,
@@ -348,10 +345,7 @@ def build_ui(parent):
     left_vbox.setSpacing(8)
     left_vbox.addWidget(left_panel)
 
-    # Barra de progresso e label
-    progress_label = QLabel("0 % - 0 / 0 arquivos")
-    progress_label.setStyleSheet("color: #ffffff; font-size: 11px;")
-    progress_label.setVisible(False)
+    # Barra de progresso
     progress_bar = QProgressBar()
     progress_bar.setStyleSheet("""
         QProgressBar {
@@ -366,6 +360,8 @@ def build_ui(parent):
     """)
     progress_bar.setValue(0)
     progress_bar.setMinimumHeight(20)
+    progress_bar.setTextVisible(True)
+    progress_bar.setFormat("%p%")
     progress_bar.setVisible(False)
     file_progress_bar = QProgressBar()
     file_progress_bar.setStyleSheet("""
@@ -385,7 +381,6 @@ def build_ui(parent):
     file_progress_bar.setFormat("%p%")
     file_progress_bar.setMinimumHeight(16)
     file_progress_bar.setVisible(False)
-    left_vbox.addWidget(progress_label)
     left_vbox.addWidget(progress_bar)
     left_vbox.addWidget(file_progress_bar)
 
@@ -519,7 +514,6 @@ def build_ui(parent):
     central_widget.labels = labels_dict
     central_widget.checkboxes = checkboxes_dict
     central_widget.progress_bar = progress_bar
-    central_widget.progress_label = progress_label
     central_widget.file_progress_bar = file_progress_bar
     central_widget.log_widget = log_widget
     central_widget.thumbnails_container = thumbnails_container
@@ -726,37 +720,9 @@ def create_top_section(parent):
     layout.addWidget(cancel_btn)
     parent.cancel_btn = cancel_btn
     
-    # Abrir pasta button
-    open_folder_btn = QPushButton("Abrir pasta")
-    open_folder_btn.setMinimumWidth(90)
-    open_folder_btn.setMinimumHeight(32)
-    open_folder_btn.setEnabled(False)
-    open_folder_btn.setStyleSheet("""
-        QPushButton {
-            background-color: #2d2d2d;
-            color: #ffffff;
-            border: 1px solid #444;
-            border-radius: 3px;
-            font-weight: bold;
-        }
-        QPushButton:hover:!disabled {
-            background-color: #3d3d3d;
-        }
-        QPushButton:pressed {
-            background-color: #444;
-        }
-        QPushButton:disabled {
-            color: #666;
-            background-color: #1a1a1a;
-            border: 1px solid #333;
-        }
-    """)
-    layout.addWidget(open_folder_btn)
-    
     # Store buttons in parent for external access
     parent.checar_btn = checar_btn
     parent.download_btn = download_btn
-    parent.open_folder_btn = open_folder_btn
     
     # Connect link input to enable/disable checar button
     def on_link_changed():
@@ -766,16 +732,12 @@ def create_top_section(parent):
         if has_text:
             download_btn.setVisible(True)
             download_btn.setEnabled(False)
-        if hasattr(parent, "open_folder_btn"):
-            parent.open_folder_btn.setEnabled(False)
         # Manter label destino visivel com base no modo atual
         if hasattr(parent, "_update_destino_label"):
             parent._update_destino_label()
         # Esconder barra de progresso quando novo link é inserido
         if hasattr(parent, "progress_bar"):
             parent.progress_bar.setVisible(False)
-        if hasattr(parent, "progress_label"):
-            parent.progress_label.setVisible(False)
         if hasattr(parent, "file_progress_bar"):
             parent.file_progress_bar.setVisible(False)
         if hasattr(parent, "pause_btn"):
@@ -929,8 +891,6 @@ def create_top_section(parent):
         # Mostrar barra de progresso durante download
         if hasattr(parent, "progress_bar"):
             parent.progress_bar.setVisible(True)
-        if hasattr(parent, "progress_label"):
-            parent.progress_label.setVisible(True)
         if hasattr(parent, "file_progress_bar"):
             parent.file_progress_bar.setVisible(True)
         if hasattr(parent, "pause_btn"):
@@ -959,8 +919,6 @@ def create_top_section(parent):
         download_btn.setEnabled(False)
         download_btn.setVisible(False)
         checar_btn.setEnabled(False)
-        if hasattr(parent, "open_folder_btn"):
-            parent.open_folder_btn.setEnabled(False)
         if hasattr(parent, "cancel_btn"):
             parent.cancel_btn.setVisible(False)
             parent.cancel_btn.setEnabled(False)
@@ -974,13 +932,13 @@ def create_top_section(parent):
             # Use um placeholder máximo que será atualizado quando o summary chegar
             parent.progress_bar.setMaximum(1000)
             parent.progress_bar.setValue(0)
-            parent.progress_label.setText(f"0 / ? arquivos (0%)")
+            parent.progress_bar.setRange(0, 0)
             parent._picazor_real_total_unknown = True
         else:
             # Para outros sites, total_files é o número real de arquivos
-            parent.progress_bar.setMaximum(total_files_for_progress if total_files_for_progress and total_files_for_progress > 0 else 100)
+            total_for_progress = total_files_for_progress if total_files_for_progress and total_files_for_progress > 0 else 100
+            parent.progress_bar.setRange(0, total_for_progress)
             parent.progress_bar.setValue(0)
-            parent.progress_label.setText(f"0 / {total_files_for_progress} arquivos (0%)")
             parent._picazor_real_total_unknown = False
         
         # Reset failed files list for manual analysis
@@ -1037,33 +995,6 @@ def create_top_section(parent):
 
     # (Removido: botão de escolher pasta)
 
-    def on_open_folder_clicked():
-        target_dir = getattr(parent, "last_download_dir", None)
-        if not target_dir:
-            target_dir = getattr(parent, "current_download_dir", None)
-
-        if target_dir and not Path(target_dir).exists():
-            target_dir = None
-
-        if not target_dir:
-            base_dir = getattr(parent, "download_root", None)
-            if base_dir and Path(base_dir).exists():
-                target_dir = Path(base_dir)
-
-        if not target_dir:
-            add_log_message(parent.log_widget, "Nenhuma pasta disponível para abrir.", warning=True)
-            return
-
-        target_dir = Path(target_dir).resolve()
-        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_dir)))
-        if not opened:
-            try:
-                os.startfile(str(target_dir))
-            except Exception:
-                add_log_message(parent.log_widget, "Falha ao abrir a pasta no Explorer.", warning=True)
-
-    open_folder_btn.clicked.connect(on_open_folder_clicked)
-    
     # Connect pause button to pause/resume function
     def on_pause_clicked():
         download_worker = getattr(parent, "download_worker", None)
@@ -1127,16 +1058,17 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
         # Para Picazor, data['total'] é o número de índices/páginas, não de arquivos reais
         # O total real será recebido no 'summary' durante o download
         # (Removido: label de arquivos)
-        # Define maximum para um valor alto temporário; será atualizado quando o summary chegar
-        parent.progress_bar.setMaximum(1000)
-        parent.progress_label.setText(f"0 / ? arquivos (0%)")
+        # Define barra indeterminada; será atualizada quando o summary chegar
+        parent.progress_bar.setRange(0, 0)
         # Marca que o total real é desconhecido para Picazor
         parent._picazor_real_total_unknown = True
     else:
         # Para Fapello, data['total'] é o número real de arquivos
         # (Removido: label de arquivos)
-        parent.progress_bar.setMaximum(data['total'])
-        parent.progress_label.setText(f"0 / {data['total']} arquivos (0%)")
+        total = data.get('total', 0)
+        total = total if total > 0 else 100
+        parent.progress_bar.setRange(0, total)
+        parent.progress_bar.setValue(0)
         parent._picazor_real_total_unknown = False
 
     if data['total'] == 0:
@@ -1249,8 +1181,8 @@ def on_download_progress_update(parent, data):
         parent.progress_bar.setValue(processed)
 
         # Atualizar label de progresso
-        if _throttled_update("_last_progress_label_ts", 120) or percent >= 100:
-            parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
+        if parent.progress_bar.maximum() > 0:
+            parent.progress_bar.setValue(processed)
         
         # Atualizar label de arquivo
         parent.labels["arquivo"].setText(f"Arquivo: {filename}")
@@ -1297,8 +1229,8 @@ def on_download_progress_update(parent, data):
         if total == 0:
             total = parent.progress_bar.maximum()
         parent.progress_bar.setValue(processed)
-        if _throttled_update("_last_progress_label_ts", 120):
-            parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
+        if parent.progress_bar.maximum() > 0:
+            parent.progress_bar.setValue(processed)
         if getattr(parent, "_current_file_index", None) == data.get("index"):
             if hasattr(parent, "file_progress_bar"):
                 parent.file_progress_bar.setRange(0, 100)
@@ -1315,8 +1247,8 @@ def on_download_progress_update(parent, data):
         if total == 0:
             total = parent.progress_bar.maximum()
         parent.progress_bar.setValue(processed)
-        if _throttled_update("_last_progress_label_ts", 120):
-            parent.progress_label.setText(f"{processed} / {total} arquivos ({percent}%)")
+        if parent.progress_bar.maximum() > 0:
+            parent.progress_bar.setValue(processed)
         if getattr(parent, "_current_file_index", None) == data.get("index"):
             if hasattr(parent, "file_progress_bar"):
                 parent.file_progress_bar.setRange(0, 100)
@@ -1340,22 +1272,14 @@ def on_download_progress_update(parent, data):
         
         # Se Picazor e o total real era desconhecido, atualizar o máximo da barra agora
         if getattr(parent, "_picazor_real_total_unknown", False) and total > 0:
-            parent.progress_bar.setMaximum(total)
+            parent.progress_bar.setRange(0, total)
             parent._picazor_real_total_unknown = False
         
         parent.progress_bar.setValue(processed)
         
-        # Atualizar labels com resumo
-        summary_msg = f"{success} / {total} arquivos baixados com sucesso"
-        if failed > 0:
-            summary_msg += f" ({failed} falharam"
-            if skipped > 0:
-                summary_msg += f", {skipped} indisponíveis"
-            summary_msg += ")"
-        elif skipped > 0:
-            summary_msg += f" ({skipped} indisponíveis)"
-        
-        parent.progress_label.setText(summary_msg)
+        if total > 0 and parent.progress_bar.maximum() != total:
+            parent.progress_bar.setRange(0, total)
+            parent.progress_bar.setValue(processed)
         
         # (Removido: log de resumo no final do download)
     
@@ -1379,8 +1303,6 @@ def on_download_complete(parent, checar_btn, download_btn):
         checar_btn.setEnabled(True)
         download_btn.setEnabled(True)
         download_btn.setVisible(True)
-        if hasattr(parent, "open_folder_btn"):
-            parent.open_folder_btn.setEnabled(False)
         if hasattr(parent, "pause_btn"):
             parent.pause_btn.setVisible(False)
             parent.pause_btn.setEnabled(False)
@@ -1389,8 +1311,6 @@ def on_download_complete(parent, checar_btn, download_btn):
             parent.cancel_btn.setEnabled(False)
         if hasattr(parent, "progress_bar"):
             parent.progress_bar.setVisible(False)
-        if hasattr(parent, "progress_label"):
-            parent.progress_label.setVisible(False)
         if hasattr(parent, "file_progress_bar"):
             parent.file_progress_bar.setVisible(False)
         return
@@ -1424,8 +1344,6 @@ def on_download_complete(parent, checar_btn, download_btn):
     download_btn.setEnabled(False)
     download_btn.setVisible(True)
     checar_btn.setEnabled(True)
-    if hasattr(parent, "open_folder_btn"):
-        parent.open_folder_btn.setEnabled(True)
     
     # Ocultar botão de pausa ao terminar o download
     if hasattr(parent, "pause_btn"):
@@ -1438,8 +1356,6 @@ def on_download_complete(parent, checar_btn, download_btn):
     # Ocultar barra de progresso e label ao terminar
     if hasattr(parent, "progress_bar"):
         parent.progress_bar.setVisible(False)
-    if hasattr(parent, "progress_label"):
-        parent.progress_label.setVisible(False)
     if hasattr(parent, "file_progress_bar"):
         parent.file_progress_bar.setVisible(False)
 
@@ -1455,8 +1371,6 @@ def on_download_error(parent, error, checar_btn, download_btn):
     download_btn.setEnabled(False)
     download_btn.setVisible(True)
     checar_btn.setEnabled(True)
-    if hasattr(parent, "open_folder_btn"):
-        parent.open_folder_btn.setEnabled(False)
     
     # Ocultar botão de pausa ao falhar o download
     if hasattr(parent, "pause_btn"):
@@ -1469,8 +1383,6 @@ def on_download_error(parent, error, checar_btn, download_btn):
     # Ocultar barra de progresso e label ao falhar
     if hasattr(parent, "progress_bar"):
         parent.progress_bar.setVisible(False)
-    if hasattr(parent, "progress_label"):
-        parent.progress_label.setVisible(False)
     if hasattr(parent, "file_progress_bar"):
         parent.file_progress_bar.setVisible(False)
 

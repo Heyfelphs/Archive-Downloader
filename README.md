@@ -7,7 +7,7 @@
 ### Downloads Inteligentes
 - 🚀 **Download paralelo otimizado** com thread pools configurados para máxima performance
 - 🌐 **Suporte multi-site**: Fapello e Picazor
-- 📊 **Barra de progresso em tempo real** com estimativa de tempo
+- 📊 **Barra de progresso em tempo real** com percentual e progresso por arquivo
 - 🖼️ **Visualização de miniaturas** durante o download (limite de 12 thumbnails)
 - ⏸️ **Controle de pausar/retomar** downloads
 - 📝 **Log detalhado** de todas as operações
@@ -30,10 +30,10 @@
 
 - **Python 3.13+**
 - **PySide6 (Qt6)** - Interface gráfica moderna
-- **aiohttp** - Requisições HTTP assíncronas
+- **requests** - Requisições HTTP
 - **BeautifulSoup4** - Parse de HTML
-- **Pillow** - Processamento de imagens
-- **asyncio** - Operações assíncronas
+- **cloudscraper** - Suporte a sites com proteções
+- **opencv-python** - Thumbnails de videos
 
 ## 📁 Estrutura do Projeto
 ```
@@ -97,16 +97,29 @@ Archive-Downloader/
    pip install -r requirements.txt
    ```
 
+5. **(Opcional) Dependencias de teste**
+   ```bash
+   pip install -r requirements-dev.txt
+   ```
+
 5. **Execute o aplicativo**
    ```bash
    python main.py
    ```
 
+## ✅ Testes
+
+Para rodar os testes automatizados:
+
+```bash
+pytest
+```
+
 ## 📖 Como Usar
 
 1. **Cole o link** do perfil/álbum na caixa de entrada
 2. **Selecione o site** (Fapello ou Picazor)
-3. **Clique em "Fetch"** para buscar os itens disponíveis
+3. **Clique em "Checar"** para buscar os itens disponíveis
 4. **Visualize as miniaturas** que aparecem durante o fetch
 5. **Clique em "Download"** para iniciar o download
 6. **Acompanhe o progresso** na barra e nos logs
@@ -124,20 +137,20 @@ O aplicativo usa configurações fixas otimizadas via benchmarking automatizado:
 
 | Site     | Threads | Chunk Size | Delay | Batch |
 |----------|---------|------------|-------|-------|
-| Fapello  | 3       | 512 KB     | N/A   | N/A   |
+| Fapello  | 3       | 256 KB     | N/A   | N/A   |
 | Picazor  | 4       | 256 KB     | 0.1s  | 30    |
 
 Essas configurações foram determinadas através de 30 testes automatizados para garantir a melhor performance.
 
 
-## 📊 Características Técnicas
+## 📊 Caracteristicas Tecnicas
 
 - **Arquitetura modular** com separação clara de responsabilidades
-- **Download assíncrono** com controle de concorrência
-- **Sistema de progresso robusto** com callbacks throttled
+- **Download com controle de concorrencia**
+- **Sistema de progresso com callbacks throttled**
 - **Gerenciamento de memória eficiente** com limite de thumbnails
 - **Persistência de estado** em JSON
-- **Animações suaves** com QPropertyAnimation
+- **Animacoes suaves** com QPropertyAnimation
 - **Throttling de UI** para evitar congelamentos
 - **Log em tempo real** com buffering otimizado
 
@@ -152,12 +165,12 @@ Essas configurações foram determinadas através de 30 testes automatizados par
 - Verifique sua velocidade de internet
 - Alguns sites limitam a taxa de download
 
-### Aplicativo não abre
+### Aplicativo nao abre
 - Certifique-se de que instalou todas as dependências
-- Verifique se está usando Python 3.13+
+- Verifique se esta usando Python 3.13+
 - Execute em modo debug: `python main.py` e observe os erros
 
-## 📝 Licença
+## 📝 Licenca
 
 Este projeto está sob uma **Licença Proprietária de Uso Pessoal**. Veja o arquivo [LICENSE](LICENSE) para mais detalhes.
 
@@ -165,7 +178,7 @@ Este projeto está sob uma **Licença Proprietária de Uso Pessoal**. Veja o arq
 
 ## 👤 Autor
 
-Desenvolvido com ❤️ para facilitar o gerenciamento de downloads de arquivos multimídia.
+Desenvolvido com carinho para facilitar o gerenciamento de downloads de arquivos multimidia.
 
 ---
 

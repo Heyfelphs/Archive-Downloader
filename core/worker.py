@@ -1,12 +1,14 @@
 # core/worker.py
 
 from os.path import join
-from utils.network import download_binary
+import os
+from utils.network import download_binary_to_file
 from core.fapello_client import get_media_info
 
 
 def prepare_filename(file_url: str, index: int, media_type: str) -> str:
-    base = file_url.split("/")[-3]
+    parts = [p for p in file_url.split("/") if p]
+    base = parts[-3] if len(parts) >= 3 else (parts[-1] if parts else "arquivo")
     ext = ".mp4" if media_type == "video" else ".jpg"
     return f"{base}_{index}{ext}"
 
@@ -40,5 +42,11 @@ def download_worker(base_url: str, target_dir: str, index: int):
     for idx, (file_url, media_type) in enumerate(media_list):
         filename = prepare_filename(file_url, f"{index}_{idx+1}", media_type)
         path = join(target_dir, filename)
-        with open(path, "wb") as f:
-            f.write(download_binary(file_url))
+        try:
+            if not file_url or not file_url.startswith("http"):
+                continue
+            if os.path.exists(path):
+                continue
+            download_binary_to_file(file_url, path)
+        except Exception:
+            continue

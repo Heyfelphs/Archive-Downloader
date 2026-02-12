@@ -5,17 +5,16 @@ from requests import Session
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import cloudscraper
+import threading
 
 from config import HEADERS_FOR_REQUESTS
 
 DEFAULT_TIMEOUT = (10, 60)
-_SESSION = None
-_CLOUDSCRAPER = None
+_THREAD_LOCAL = threading.local()
 
 
 def _get_session() -> Session:
-    global _SESSION
-    if _SESSION is None:
+    if not hasattr(_THREAD_LOCAL, "session"):
         session = Session()
         session.headers.update(HEADERS_FOR_REQUESTS)
         retries = Retry(
@@ -27,16 +26,16 @@ def _get_session() -> Session:
         adapter = HTTPAdapter(max_retries=retries)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
-        _SESSION = session
-    return _SESSION
+        _THREAD_LOCAL.session = session
+    return _THREAD_LOCAL.session
 
 
 def _get_cloudscraper():
-    global _CLOUDSCRAPER
-    if _CLOUDSCRAPER is None:
-        _CLOUDSCRAPER = cloudscraper.create_scraper()
-        _CLOUDSCRAPER.headers.update(HEADERS_FOR_REQUESTS)
-    return _CLOUDSCRAPER
+    if not hasattr(_THREAD_LOCAL, "scraper"):
+        scraper = cloudscraper.create_scraper()
+        scraper.headers.update(HEADERS_FOR_REQUESTS)
+        _THREAD_LOCAL.scraper = scraper
+    return _THREAD_LOCAL.scraper
 
 
 def http_get(url: str):
