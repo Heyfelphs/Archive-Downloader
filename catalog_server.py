@@ -13,6 +13,9 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from typing import Optional, Tuple, Dict, List, Any
+from dataclasses import dataclass, asdict
+from datetime import datetime, timedelta
 
 
 DEFAULT_PORT = 8008
@@ -24,11 +27,93 @@ if APPDATA_DIR:
 else:
     DEFAULT_MODELS_DIR = Path.home() / "Hey_Felphs Archive-Downloader"
 
-CACHE_TTL = 1800  # 30 minutes
-models_cache = {}
-model_info_cache = {}  # Cache para _get_model_info
+# Configurações de cache otimizadas
+CACHE_TTL = 1800  # 30 minutos
+CACHE_CLEANUP_INTERVAL = 300  # 5 minutos
+MAX_CACHE_SIZE = 1000  # Máximo de entradas no cache
+SCAN_CHUNK_SIZE = 500  # Processar arquivos em chunks durante scan
+
+# Caches globais com estrutura melhorada
+@dataclass
+class CacheEntry:
+    """Entrada de cache com timestamp"""
+    data: Any
+    timestamp: float
+    
+    def is_expired(self, ttl: int = CACHE_TTL) -> bool:
+        return time.time() - self.timestamp > ttl
+
+class CacheManager:
+    """Gerenciador de cache thread-safe com limpeza automática"""
+    def __init__(self, max_size: int = MAX_CACHE_SIZE, ttl: int = CACHE_TTL):
+        self._cache: Dict[str, CacheEntry] = {}
+        self._lock = threading.RLock()
+        self.max_size = max_size
+        self.ttl = ttl
+        self._last_cleanup = time.time()
+    
+    def get(self, key: str) -> Optional[Any]:
+        """Obtém valor do cache se válido"""
+        with self._lock:
+            self._maybe_cleanup()
+            entry = self._cache.get(key)
+            if entry and not entry.is_expired(self.ttl):
+                return entry.data
+            elif entry:
+                del self._cache[key]
+            return None
+    
+    def set(self, key: str, value: Any) -> None:
+        """Define valor no cache"""
+        with self._lock:
+            if len(self._cache) >= self.max_size:
+                self._evict_oldest()
+            self._cache[key] = CacheEntry(data=value, timestamp=time.time())
+    
+    def delete(self, key: str) -> None:
+        """Remove entrada do cache"""
+        with self._lock:
+            self._cache.pop(key, None)
+    
+    def clear(self) -> None:
+        """Limpa todo o cache"""
+        with self._lock:
+            self._cache.clear()
+    
+    def _maybe_cleanup(self) -> None:
+        """Limpa entradas expiradas periodicamente"""
+        now = time.time()
+        if now - self._last_cleanup > CACHE_CLEANUP_INTERVAL:
+            expired_keys = [k for k, v in self._cache.items() if v.is_expired(self.ttl)]
+            for key in expired_keys:
+                del self._cache[key]
+            self._last_cleanup = now
+    
+    def _evict_oldest(self) -> None:
+        """Remove a entrada mais antiga do cache"""
+        if not self._cache:
+            return
+        oldest_key = min(self._cache.items(), key=lambda x: x[1].timestamp)[0]
+        del self._cache[oldest_key]
+    
+    def get_stats(self) -> Dict[str, int]:
+        """Retorna estatísticas do cache"""
+        with self._lock:
+            return {
+                "size": len(self._cache),
+                "max_size": self.max_size,
+                "ttl": self.ttl
+            }
+
+# Instâncias de cache
+models_cache = CacheManager(max_size=500, ttl=CACHE_TTL)
+model_info_cache = CacheManager(max_size=2000, ttl=CACHE_TTL)
+media_list_cache = CacheManager(max_size=1000, ttl=CACHE_TTL)
+
+# Estado de scan de duplicatas
 scan_progress = {"current": 0, "total": 0, "is_scanning": False}
 scan_results = None
+scan_lock = threading.Lock()
 HASH_CACHE_FILE = "duplicates_cache.json"
 
 
@@ -57,6 +142,12 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/clear_cache":
             self._handle_clear_cache()
             return
+        if parsed.path == "/api/cache_stats":
+            self._handle_cache_stats()
+            return
+        if parsed.path == "/api/search":
+            self._handle_search(parsed.query)
+            return
         if parsed.path.startswith("/media/"):
             self._handle_media(parsed.path)
             return
@@ -76,17 +167,30 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_error(404, "Not found")
 
     def _handle_sites(self) -> None:
+        """Lista sites disponíveis com cache otimizado"""
+        cache_key = "sites_list"
+        cached = models_cache.get(cache_key)
+        if cached is not None:
+            self._send_json({"sites": cached})
+            return
+
         sites = []
         if self.models_dir and self.models_dir.exists():
-            for site_dir in sorted(self.models_dir.iterdir()):
-                if not site_dir.is_dir():
-                    continue
-                model_count = sum(1 for d in site_dir.iterdir() if d.is_dir())
-                sites.append({"name": site_dir.name, "models": model_count})
-
+            # Usar os.scandir() é mais rápido que iterdir()
+            with os.scandir(self.models_dir) as entries:
+                for entry in entries:
+                    if not entry.is_dir():
+                        continue
+                    # Contar modelos de forma otimizada
+                    model_count = sum(1 for d in os.scandir(entry.path) if d.is_dir())
+                    sites.append({"name": entry.name, "models": model_count})
+        
+        sites.sort(key=lambda x: x["name"])
+        models_cache.set(cache_key, sites)
         self._send_json({"sites": sites})
 
     def _handle_models(self, query: str) -> None:
+        """Lista modelos de um site com cache otimizado e paginação"""
         params = parse_qs(query)
         site = (params.get("site") or [""])[0].strip()
         safe_site = self._safe_site_name(site)
@@ -94,33 +198,70 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"models": [], "error": "invalid_site"}, status=400)
             return
 
+        # Parâmetros de paginação
+        try:
+            page = int((params.get("page") or ["1"])[0])
+            limit = int((params.get("limit") or ["0"])[0])  # 0 = sem limite
+        except ValueError:
+            page = 1
+            limit = 0
+        
+        if page < 1:
+            page = 1
+        if limit < 0:
+            limit = 0
+
         cache_key = f"models_{safe_site}"
-        now = time.time()
-        if cache_key in models_cache:
-            cached_data, cached_time = models_cache[cache_key]
-            if now - cached_time < CACHE_TTL:
-                self._send_json({"site": safe_site, "models": cached_data})
-                return
+        cached = models_cache.get(cache_key)
+        if cached is not None:
+            models = cached
+        else:
+            models = []
+            if self.models_dir and self.models_dir.exists():
+                site_dir = self.models_dir / safe_site
+                if site_dir.exists() and site_dir.is_dir():
+                    # Processar modelos em batch para melhor performance
+                    with os.scandir(site_dir) as entries:
+                        model_entries = [(e.name, e.path) for e in entries if e.is_dir()]
+                    
+                    model_entries.sort(key=lambda x: x[0])
+                    
+                    for model_name, model_path in model_entries:
+                        thumb, img_count, vid_count = self._get_model_info_fast(Path(model_path))
+                        models.append({
+                            "name": model_name,
+                            "thumb": thumb,
+                            "image_count": img_count,
+                            "video_count": vid_count,
+                        })
 
-        models = []
-        if self.models_dir and self.models_dir.exists():
-            site_dir = self.models_dir / safe_site
-            if site_dir.exists() and site_dir.is_dir():
-                for model_dir in sorted(site_dir.iterdir()):
-                    if not model_dir.is_dir():
-                        continue
-                    thumb, img_count, vid_count = self._get_model_info(model_dir)
-                    models.append({
-                        "name": model_dir.name,
-                        "thumb": thumb,
-                        "image_count": img_count,
-                        "video_count": vid_count,
-                    })
-
-        models_cache[cache_key] = (models, now)
-        self._send_json({"site": safe_site, "models": models})
+            models_cache.set(cache_key, models)
+        
+        # Aplicar paginação
+        total = len(models)
+        if limit > 0:
+            start = (page - 1) * limit
+            end = start + limit
+            models_page = models[start:end]
+            total_pages = (total + limit - 1) // limit if limit > 0 else 1
+        else:
+            models_page = models
+            total_pages = 1
+        
+        response = {
+            "site": safe_site,
+            "models": models_page,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "total_pages": total_pages
+            }
+        }
+        self._send_json(response)
 
     def _handle_model(self, query: str) -> None:
+        """Obtém detalhes de um modelo com cache de lista de mídia e lazy loading"""
         params = parse_qs(query)
         site = (params.get("site") or [""])[0].strip()
         model = (params.get("model") or [""])[0].strip()
@@ -129,6 +270,14 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         if not safe_site or not safe_model:
             self._send_json({"error": "invalid_params"}, status=400)
             return
+
+        # Parâmetros de lazy loading
+        try:
+            images_limit = int((params.get("images_limit") or ["0"])[0])  # 0 = sem limite
+            videos_limit = int((params.get("videos_limit") or ["0"])[0])  # 0 = sem limite
+        except ValueError:
+            images_limit = 0
+            videos_limit = 0
 
         if not self.models_dir:
             self._send_json({"error": "models_dir_missing"}, status=404)
@@ -139,15 +288,36 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "model_not_found"}, status=404)
             return
 
-        images, videos = self._list_media_files(model_dir)
+        # Cache de lista de mídia
+        cache_key = f"media_{safe_site}_{safe_model}"
+        cached = media_list_cache.get(cache_key)
+        
+        if cached is not None:
+            images, videos = cached
+        else:
+            images, videos = self._list_media_files_fast(model_dir)
+            media_list_cache.set(cache_key, (images, videos))
+        
+        # Aplicar lazy loading
+        total_images = len(images)
+        total_videos = len(videos)
+        
+        if images_limit > 0:
+            images = images[:images_limit]
+        if videos_limit > 0:
+            videos = videos[:videos_limit]
+        
         self._send_json({
             "site": safe_site,
             "model": safe_model,
             "images": images,
             "videos": videos,
+            "total_images": total_images,
+            "total_videos": total_videos,
         })
 
     def _handle_media(self, path: str) -> None:
+        """Serve arquivos de mídia com cache HTTP"""
         parts = path.split("/")
         if len(parts) < 5:
             self.send_error(404, "File not found")
@@ -173,6 +343,7 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         self._send_file(file_path)
 
     def _handle_delete_model(self) -> None:
+        """Deleta um modelo e limpa caches relacionados"""
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -204,13 +375,76 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "delete_failed"}, status=500)
             return
 
-        cache_key = f"models_{safe_site}"
-        if cache_key in models_cache:
-            models_cache.pop(cache_key, None)
+        # Limpar caches relacionados
+        models_cache.delete(f"models_{safe_site}")
+        media_list_cache.delete(f"media_{safe_site}_{safe_model}")
+        models_cache.delete("sites_list")
 
         self._send_json({"status": "deleted"})
 
+    def _handle_search(self, query: str) -> None:
+        """Busca modelos por nome em todos os sites ou site específico"""
+        params = parse_qs(query)
+        search_query = (params.get("q") or [""])[0].strip().lower()
+        site_filter = (params.get("site") or [""])[0].strip()
+        
+        if not search_query:
+            self._send_json({"results": [], "error": "query_required"}, status=400)
+            return
+        
+        if not self.models_dir or not self.models_dir.exists():
+            self._send_json({"results": []}, status=200)
+            return
+        
+        results = []
+        
+        # Determinar sites a buscar
+        if site_filter:
+            safe_site = self._safe_site_name(site_filter)
+            if safe_site:
+                sites_to_search = [safe_site]
+            else:
+                sites_to_search = []
+        else:
+            # Buscar em todos os sites
+            with os.scandir(self.models_dir) as entries:
+                sites_to_search = [e.name for e in entries if e.is_dir()]
+        
+        # Buscar modelos que correspondem à query
+        for site in sites_to_search:
+            site_dir = self.models_dir / site
+            if not site_dir.exists() or not site_dir.is_dir():
+                continue
+            
+            with os.scandir(site_dir) as entries:
+                for entry in entries:
+                    if not entry.is_dir():
+                        continue
+                    
+                    # Verificar se o nome do modelo contém a query
+                    if search_query in entry.name.lower():
+                        # Obter informações do modelo
+                        thumb, img_count, vid_count = self._get_model_info_fast(Path(entry.path))
+                        results.append({
+                            "site": site,
+                            "name": entry.name,
+                            "thumb": thumb,
+                            "image_count": img_count,
+                            "video_count": vid_count,
+                        })
+        
+        # Ordenar resultados por relevância (modelos que começam com a query primeiro)
+        results.sort(key=lambda x: (not x["name"].lower().startswith(search_query), x["name"].lower()))
+        
+        self._send_json({
+            "query": search_query,
+            "site": site_filter if site_filter else "all",
+            "results": results,
+            "total": len(results)
+        })
+
     def _handle_delete_file(self) -> None:
+        """Deleta um arquivo e limpa caches relacionados"""
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -244,14 +478,14 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "delete_failed"}, status=500)
             return
 
-        cache_key = f"models_{safe_site}"
-        if cache_key in models_cache:
-            models_cache.pop(cache_key, None)
+        # Limpar caches relacionados
+        models_cache.delete(f"models_{safe_site}")
+        media_list_cache.delete(f"media_{safe_site}_{safe_model}")
 
         self._send_json({"status": "deleted"})
 
     def _handle_scan_duplicates(self) -> None:
-        """Inicia verificação de duplicatas em thread separada."""
+        """Inicia verificação de duplicatas em thread separada com processamento otimizado"""
         global scan_progress, scan_results
         
         if not self.models_dir or not self.models_dir.exists():
@@ -259,22 +493,30 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         
         # Se já está executando, retornar erro
-        if scan_progress["is_scanning"]:
-            self._send_json({"error": "scan_in_progress"}, status=409)
-            return
+        with scan_lock:
+            if scan_progress["is_scanning"]:
+                self._send_json({"error": "scan_in_progress"}, status=409)
+                return
         
         # Iniciar scan em thread separada
-        scan_thread = threading.Thread(target=self._run_scan_duplicates, daemon=True)
+        scan_thread = threading.Thread(
+            target=self._run_scan_duplicates_optimized,
+            daemon=True
+        )
         scan_thread.start()
         
         # Retornar resposta imediata
-        self._send_json({"status": "started", "message": "Scan iniciado"})
+        self._send_json({"status": "started", "message": "Scan iniciado com processamento otimizado"})
     
-    def _run_scan_duplicates(self) -> None:
-        """Executa o scan de duplicatas (roda em thread separada)."""
+    def _run_scan_duplicates_optimized(self) -> None:
+        """Executa scan de duplicatas otimizado com processamento em chunks"""
         global scan_progress, scan_results
         
-        print("[DEBUG] Iniciando scan de duplicatas...")  # Debug
+        print("[INFO] Iniciando scan de duplicatas otimizado...")
+        
+        if not self.models_dir:
+            print("[ERROR] models_dir não está definido")
+            return
         
         valid_extensions = {
             '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp',
@@ -286,74 +528,81 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         cache_hits = 0
         cache_misses = 0
 
-        # Primeiro, contar total de arquivos
-        scan_progress["is_scanning"] = True
-        scan_progress["current"] = 0
-        scan_progress["total"] = 0
-        scan_results = None
+        with scan_lock:
+            scan_progress["is_scanning"] = True
+            scan_progress["current"] = 0
+            scan_progress["total"] = 0
+            scan_results = None
         
-        print("[DEBUG] Contando arquivos totais...")  # Debug
+        # Coletar lista de arquivos primeiro (mais rápido)
+        print("[INFO] Coletando lista de arquivos...")
+        files_to_process = []
+        
         for root, _, files in os.walk(self.models_dir):
             for filename in files:
                 file_extension = os.path.splitext(filename)[1].lower()
-                if file_extension in valid_extensions:
-                    scan_progress["total"] += 1
-        
-        print(f"[DEBUG] Total de arquivos a processar: {scan_progress['total']}")  # Debug
-        
-        # Agora processar os arquivos
-        hashes = defaultdict(list)
-        new_cache = {}
-        files_checked = 0
-
-        for root, _, files in os.walk(self.models_dir):
-            for filename in files:
-                file_extension = os.path.splitext(filename)[1].lower()
-                
                 if file_extension in valid_extensions:
                     file_path = os.path.join(root, filename)
                     rel_path = os.path.relpath(file_path, self.models_dir)
-                    
-                    # Tentar obter hash do cache
-                    file_hash = self._get_cached_hash(file_path, rel_path, hash_cache)
-                    
-                    if file_hash and rel_path in hash_cache:
-                        # Cache hit - usar hash existente
-                        cache_hits += 1
-                        new_cache[rel_path] = hash_cache[rel_path]
-                    else:
-                        # Cache miss - calcular novo hash
-                        file_hash = self._calculate_md5(file_path)
-                        cache_misses += 1
-                        
-                        if file_hash:
-                            # Adicionar ao novo cache
-                            try:
-                                stats = os.stat(file_path)
-                                new_cache[rel_path] = {
-                                    "hash": file_hash,
-                                    "size": stats.st_size,
-                                    "mtime": stats.st_mtime
-                                }
-                            except Exception:
-                                pass
+                    files_to_process.append((file_path, rel_path))
+        
+        total_files = len(files_to_process)
+        with scan_lock:
+            scan_progress["total"] = total_files
+        
+        print(f"[INFO] Total de arquivos a processar: {total_files}")
+        
+        # Processar em chunks para melhor performance
+        hashes = defaultdict(list)
+        new_cache = {}
+        files_checked = 0
+        chunk_size = SCAN_CHUNK_SIZE
+        
+        for i in range(0, total_files, chunk_size):
+            chunk = files_to_process[i:i + chunk_size]
+            
+            for file_path, rel_path in chunk:
+                # Verificar cache primeiro
+                file_hash = self._get_cached_hash(file_path, rel_path, hash_cache)
+                
+                if file_hash and rel_path in hash_cache:
+                    # Cache hit
+                    cache_hits += 1
+                    new_cache[rel_path] = hash_cache[rel_path]
+                else:
+                    # Cache miss - calcular hash
+                    file_hash = self._calculate_md5_fast(file_path)
+                    cache_misses += 1
                     
                     if file_hash:
-                        hashes[file_hash].append(rel_path)
-                        files_checked += 1
+                        try:
+                            stats = os.stat(file_path)
+                            new_cache[rel_path] = {
+                                "hash": file_hash,
+                                "size": stats.st_size,
+                                "mtime": stats.st_mtime
+                            }
+                        except Exception:
+                            pass
+                
+                if file_hash:
+                    hashes[file_hash].append(rel_path)
+                    files_checked += 1
+                    
+                    with scan_lock:
                         scan_progress["current"] = files_checked
-                        
-                        # Log a cada 100 arquivos
-                        if files_checked % 100 == 0:
-                            print(f"[DEBUG] Progresso: {files_checked}/{scan_progress['total']}")
+            
+            # Log a cada chunk processado
+            if (i // chunk_size + 1) % 5 == 0:
+                print(f"[INFO] Progresso: {files_checked}/{total_files} arquivos ({(files_checked/total_files*100):.1f}%)")
 
+        # Identificar duplicatas
         duplicates = {k: v for k, v in hashes.items() if len(v) > 1}
         
         duplicate_groups = []
         total_size_waste = 0
         
         for file_hash, file_list in duplicates.items():
-            # Pegar tamanho do primeiro arquivo
             first_file = self.models_dir / file_list[0]
             if first_file.exists():
                 file_size = first_file.stat().st_size
@@ -371,9 +620,17 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "waste": waste
             })
         
-        scan_progress["is_scanning"] = False
+        # Ordenar por desperdício (maior primeiro)
+        duplicate_groups.sort(key=lambda x: x["waste"], reverse=True)
         
-        print(f"[DEBUG] Scan finalizado. Arquivos: {files_checked}, Grupos duplicados: {len(duplicates)}")  # Debug
+        with scan_lock:
+            scan_progress["is_scanning"] = False
+        
+        print(f"[INFO] Scan finalizado!")
+        print(f"  - Arquivos processados: {files_checked}")
+        print(f"  - Grupos duplicados: {len(duplicates)}")
+        print(f"  - Espaço desperdiçado: {self._format_bytes(total_size_waste)}")
+        print(f"  - Taxa de cache hit: {(cache_hits/(cache_hits+cache_misses)*100):.1f}%" if (cache_hits+cache_misses) > 0 else "N/A")
         
         # Salvar cache atualizado
         self._save_hash_cache(new_cache)
@@ -392,49 +649,71 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         }
 
     def _handle_scan_progress(self) -> None:
-        """Retorna o progresso atual do scan e resultados se disponível."""
+        """Retorna o progresso atual do scan"""
         global scan_progress, scan_results
         
-        response = dict(scan_progress)
-        
-        # Se o scan terminou e temos resultados, incluir nos dados
-        if not scan_progress["is_scanning"] and scan_results is not None:
-            response["completed"] = True
-            response["results"] = scan_results
-        else:
-            response["completed"] = False
+        with scan_lock:
+            response = dict(scan_progress)
+            
+            if not scan_progress["is_scanning"] and scan_results is not None:
+                response["completed"] = True
+                response["results"] = scan_results
+            else:
+                response["completed"] = False
         
         self._send_json(response)
     
     def _handle_clear_cache(self) -> None:
-        """Limpa o arquivo de cache de hashes."""
+        """Limpa todos os caches (hash e memória)"""
         if not self.models_dir:
             self._send_json({"error": "models_dir_missing"}, status=404)
             return
         
+        # Limpar cache de hash em disco
         cache_file = self.models_dir / HASH_CACHE_FILE
+        hash_cleared = False
+        
         try:
             if cache_file.exists():
                 cache_file.unlink()
-                self._send_json({"status": "cleared", "message": "Cache limpo com sucesso"})
-            else:
-                self._send_json({"status": "empty", "message": "Cache já estava vazio"})
+                hash_cleared = True
         except Exception as e:
             self._send_json({"error": "clear_failed", "message": str(e)}, status=500)
+            return
+        
+        # Limpar caches em memória
+        models_cache.clear()
+        model_info_cache.clear()
+        media_list_cache.clear()
+        
+        self._send_json({
+            "status": "cleared",
+            "hash_cache": "cleared" if hash_cleared else "empty",
+            "memory_caches": "cleared",
+            "message": "Todos os caches foram limpos com sucesso"
+        })
+    
+    def _handle_cache_stats(self) -> None:
+        """Retorna estatísticas dos caches"""
+        stats = {
+            "models_cache": models_cache.get_stats(),
+            "model_info_cache": model_info_cache.get_stats(),
+            "media_list_cache": media_list_cache.get_stats(),
+        }
+        self._send_json(stats)
     
     def _handle_delete_duplicate(self) -> None:
-        """Deleta um arquivo duplicado pelo caminho relativo."""
+        """Deleta um arquivo duplicado"""
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length > 0 else b"{}"
             payload = json.loads(raw.decode("utf-8"))
         except Exception as e:
-            print(f"[DEBUG] Erro ao parsear JSON: {e}")  # Debug
+            print(f"[ERROR] Erro ao parsear JSON: {e}")
             self._send_json({"error": "invalid_json"}, status=400)
             return
 
         rel_path = str(payload.get("path", "")).strip()
-        print(f"[DEBUG] Tentando deletar: {rel_path}")  # Debug
         if not rel_path:
             self._send_json({"error": "invalid_params"}, status=400)
             return
@@ -443,10 +722,9 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "models_dir_missing"}, status=404)
             return
 
-        # Construir caminho absoluto e validar
+        # Construir e validar caminho
         file_path = self.models_dir / rel_path
         
-        # Verificar se o arquivo está dentro do models_dir (segurança)
         try:
             file_path = file_path.resolve()
             if not str(file_path).startswith(str(self.models_dir.resolve())):
@@ -462,7 +740,7 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         try:
             file_path.unlink()
-            print(f"[DEBUG] Arquivo deletado com sucesso: {file_path}")  # Debug
+            print(f"[INFO] Arquivo deletado: {rel_path}")
             
             # Remover do cache de hashes
             hash_cache = self._load_hash_cache()
@@ -472,11 +750,11 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             
             self._send_json({"status": "deleted", "path": rel_path})
         except Exception as e:
-            print(f"[DEBUG] Erro ao deletar arquivo: {e}")  # Debug
+            print(f"[ERROR] Erro ao deletar: {e}")
             self._send_json({"error": "delete_failed", "message": str(e)}, status=500)
 
     def _load_hash_cache(self) -> dict:
-        """Carrega o cache de hashes do arquivo JSON."""
+        """Carrega cache de hashes do disco"""
         if not self.models_dir:
             return {}
         
@@ -491,7 +769,7 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return {}
     
     def _save_hash_cache(self, cache: dict) -> None:
-        """Salva o cache de hashes no arquivo JSON."""
+        """Salva cache de hashes no disco"""
         if not self.models_dir:
             return
         
@@ -500,10 +778,10 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump(cache, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"Erro ao salvar cache: {e}")
+            print(f"[ERROR] Erro ao salvar cache: {e}")
     
     def _get_cached_hash(self, file_path: str, rel_path: str, cache: dict) -> str | None:
-        """Obtém hash do cache se o arquivo não mudou."""
+        """Obtém hash do cache se válido"""
         if rel_path not in cache:
             return None
         
@@ -512,12 +790,11 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return None
         
         try:
-            # Verificar se arquivo ainda existe e não mudou
             stats = os.stat(file_path)
             cached_size = cached_data.get("size")
             cached_mtime = cached_data.get("mtime")
             
-            # Se tamanho ou data de modificação mudaram, invalidar cache
+            # Validar se arquivo não mudou
             if cached_size != stats.st_size or cached_mtime != stats.st_mtime:
                 return None
             
@@ -526,8 +803,8 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return None
     
     @staticmethod
-    def _calculate_md5(file_path: str, block_size: int = 65536) -> str | None:
-        """Calcula o hash MD5 de um arquivo."""
+    def _calculate_md5_fast(file_path: str, block_size: int = 131072) -> str | None:
+        """Calcula MD5 com buffer otimizado (128KB)"""
         md5 = hashlib.md5()
         try:
             with open(file_path, 'rb') as f:
@@ -538,9 +815,10 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return None
 
     def _send_json(self, data: dict, status: int = 200) -> None:
+        """Envia resposta JSON com compressão gzip se apropriado"""
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
         
-        # Comprimir se o cliente aceitar e payload for grande (>1KB)
+        # Comprimir se cliente aceitar e payload > 1KB
         accept_encoding = self.headers.get('Accept-Encoding', '')
         if 'gzip' in accept_encoding and len(payload) > 1024:
             payload = gzip.compress(payload, compresslevel=6)
@@ -548,7 +826,7 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(payload)))
-            self.send_header("Cache-Control", "public, max-age=300")  # 5 min cache
+            self.send_header("Cache-Control", "public, max-age=300")
         else:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -559,24 +837,25 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _send_file(self, file_path: Path) -> None:
+        """Envia arquivo com cache HTTP e streaming"""
         try:
             fs = file_path.stat()
-            # Adicionar cache headers para arquivos de mídia
             self.send_response(200)
             self.send_header("Content-Length", str(fs.st_size))
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Cache-Control", "public, max-age=86400")  # 24h cache
+            self.send_header("Cache-Control", "public, max-age=86400")  # 24h
             self.end_headers()
             
-            # Enviar arquivo em chunks para economizar memória
+            # Streaming em chunks de 64KB
             with file_path.open("rb") as handle:
-                while chunk := handle.read(65536):  # 64KB chunks
+                while chunk := handle.read(65536):
                     self.wfile.write(chunk)
         except Exception:
             self.send_error(404, "File not found")
 
     @staticmethod
     def _safe_site_name(site: str) -> str | None:
+        """Valida nome de site/modelo para segurança"""
         if not site or site in {".", ".."}:
             return None
         if "/" in site or "\\" in site:
@@ -587,23 +866,20 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return None
         return site
 
-    @staticmethod
-    def _get_model_info(model_dir: Path) -> tuple[str | None, int, int]:
-        global model_info_cache
-        # Check cache primeiro
+    def _get_model_info_fast(self, model_dir: Path) -> Tuple[Optional[str], int, int]:
+        """Obtém informações do modelo com cache otimizado"""
         cache_key = str(model_dir)
-        now = time.time()
-        if cache_key in model_info_cache:
-            cached_data, cached_time = model_info_cache[cache_key]
-            if now - cached_time < CACHE_TTL:
-                return cached_data
+        cached = model_info_cache.get(cache_key)
+        if cached is not None:
+            return cached
         
         image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
         video_exts = {".mp4", ".webm", ".mov", ".mkv"}
         images: list[str] = []
         videos: list[str] = []
+        
         try:
-            # Usar os.scandir() é mais rápido que iterdir()
+            # os.scandir() é mais rápido que iterdir()
             with os.scandir(model_dir) as entries:
                 for entry in entries:
                     if not entry.is_file():
@@ -618,64 +894,105 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         
         thumb = random.choice(images) if images else None
         result = (thumb, len(images), len(videos))
-        model_info_cache[cache_key] = (result, now)
+        model_info_cache.set(cache_key, result)
         return result
 
     @staticmethod
-    def _list_media_files(model_dir: Path) -> tuple[list[str], list[str]]:
+    def _list_media_files_fast(model_dir: Path) -> Tuple[List[str], List[str]]:
+        """Lista arquivos de mídia com performance otimizada"""
         image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
         video_exts = {".mp4", ".webm", ".mov", ".mkv"}
         images: list[str] = []
         videos: list[str] = []
+        
         try:
-            for item in sorted(model_dir.iterdir()):
-                if not item.is_file():
-                    continue
-                ext = item.suffix.lower()
-                if ext in image_exts:
-                    images.append(item.name)
-                elif ext in video_exts:
-                    videos.append(item.name)
+            # Usar os.scandir() é mais rápido
+            with os.scandir(model_dir) as entries:
+                for entry in entries:
+                    if not entry.is_file():
+                        continue
+                    ext = os.path.splitext(entry.name)[1].lower()
+                    if ext in image_exts:
+                        images.append(entry.name)
+                    elif ext in video_exts:
+                        videos.append(entry.name)
+            
+            # Ordenar apenas no final
+            images.sort()
+            videos.sort()
         except Exception:
             return [], []
+        
         return images, videos
+    
+    @staticmethod
+    def _format_bytes(bytes_size: int) -> str:
+        """Formata bytes em formato legível"""
+        size_float = float(bytes_size)
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_float < 1024.0:
+                return f"{size_float:.2f} {unit}"
+            size_float /= 1024.0
+        return f"{size_float:.2f} PB"
 
 
 def run_server(port: int, directory: Path, models_dir: Path) -> None:
+    """Inicia o servidor com thread pool"""
     handler = functools.partial(
         CatalogRequestHandler,
         directory=str(directory),
         models_dir=models_dir,
     )
     with socketserver.ThreadingTCPServer(("", port), handler) as httpd:
-        print(f"Catalog server running on http://localhost:{port}")
-        httpd.serve_forever()
+        httpd.daemon_threads = True  # Threads daemon para melhor cleanup
+        print(f"╔═══════════════════════════════════════════════════╗")
+        print(f"║  Catalog Server - Otimizado                       ║")
+        print(f"╠═══════════════════════════════════════════════════╣")
+        print(f"║  URL: http://localhost:{port:<30} ║")
+        print(f"║  Models Dir: {str(models_dir)[:36]:<36}║")
+        print(f"╚═══════════════════════════════════════════════════╝")
+        print(f"\n[INFO] Servidor rodando. Pressione Ctrl+C para parar.\n")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\n[INFO] Servidor encerrado.")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serve the catalog UI as a standalone site")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind the server")
+    """Parse argumentos da linha de comando"""
+    parser = argparse.ArgumentParser(
+        description="Serve the catalog UI as a standalone site (Optimized)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"Port to bind the server (default: {DEFAULT_PORT})"
+    )
     parser.add_argument(
         "--dir",
         type=Path,
         default=DEFAULT_UI_DIR,
-        help="Directory to serve",
+        help="Directory to serve"
     )
     parser.add_argument(
         "--models-dir",
         type=Path,
         default=DEFAULT_MODELS_DIR,
-        help="Directory with downloaded models grouped by site",
+        help="Directory with downloaded models grouped by site"
     )
     return parser.parse_args()
 
 
 def main() -> None:
+    """Ponto de entrada principal"""
     args = parse_args()
     directory = args.dir.resolve()
     models_dir = args.models_dir.resolve()
+    
     if not directory.exists() or not directory.is_dir():
-        raise SystemExit(f"Catalog directory not found: {directory}")
+        raise SystemExit(f"❌ Catalog directory not found: {directory}")
+    
     run_server(args.port, directory, models_dir)
 
 
