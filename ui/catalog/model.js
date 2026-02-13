@@ -57,6 +57,16 @@ function openPreview(type, index) {
     previewVideo.style.display = "none";
     previewVideo.pause();
     previewVideo.removeAttribute("src");
+    
+    // Pré-carregar imagens adjacentes para navegação mais suave
+    const preloadAdjacent = (i) => {
+      if (i >= 0 && i < imageList.length) {
+        const img = new Image();
+        img.src = `/media/${site}/${model}/${imageList[i]}`;
+      }
+    };
+    preloadAdjacent(index + 1);
+    preloadAdjacent(index - 1);
   }
 
   preview.classList.remove("hidden");
@@ -176,13 +186,33 @@ fetch(`api/model?site=${encodeURIComponent(site)}&model=${encodeURIComponent(mod
     imageList = Array.isArray(data.images) ? data.images : [];
     videoList = Array.isArray(data.videos) ? data.videos : [];
 
+    // IntersectionObserver para lazy loading
+    const mediaObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const media = entry.target;
+          const src = media.dataset.src;
+          if (src) {
+            media.src = src;
+            media.removeAttribute('data-src');
+            mediaObserver.unobserve(media);
+          }
+        }
+      });
+    }, { rootMargin: '200px' });
+
+    // Usar DocumentFragment para melhor performance
+    const imagesFragment = document.createDocumentFragment();
+    
     imageList.forEach((name, index) => {
       const container = document.createElement("div");
       container.className = "thumb-container";
       
       const img = document.createElement("img");
-      img.src = `/media/${site}/${model}/${name}`;
+      // Usar lazy loading
+      img.dataset.src = `/media/${site}/${model}/${name}`;
       img.className = "thumb";
+      img.loading = "lazy";
       img.onclick = () => openPreview("images", index);
       container.appendChild(img);
       
@@ -196,16 +226,23 @@ fetch(`api/model?site=${encodeURIComponent(site)}&model=${encodeURIComponent(mod
       };
       container.appendChild(deleteBtn);
       
-      imagesGrid.appendChild(container);
+      imagesFragment.appendChild(container);
+      mediaObserver.observe(img);
     });
+    
+    imagesGrid.appendChild(imagesFragment);
 
+    // Videos com DocumentFragment
+    const videosFragment = document.createDocumentFragment();
+    
     videoList.forEach((name, index) => {
       const videoCard = document.createElement("div");
       videoCard.className = "video-thumb";
       
       const video = document.createElement("video");
-      video.src = `/media/${site}/${model}/${name}`;
-      video.preload = "metadata";
+      // Usar lazy loading
+      video.dataset.src = `/media/${site}/${model}/${name}`;
+      video.preload = "none";  // Mudado de metadata para none
       video.muted = true;
       video.playsInline = true;
       video.className = "thumb";
@@ -227,8 +264,11 @@ fetch(`api/model?site=${encodeURIComponent(site)}&model=${encodeURIComponent(mod
       videoCard.appendChild(deleteBtn);
       
       videoCard.onclick = () => openPreview("videos", index);
-      videosGrid.appendChild(videoCard);
+      videosFragment.appendChild(videoCard);
+      mediaObserver.observe(video);
     });
+    
+    videosGrid.appendChild(videosFragment);
 
     imgCountEl.textContent = imageList.length;
     videoCountEl.textContent = videoList.length;

@@ -36,7 +36,10 @@ fetch(`api/models?site=${encodeURIComponent(site)}`)
           }
         }
       });
-    }, { rootMargin: '50px' });
+    }, { rootMargin: '100px' });  // Aumentado de 50px para 100px
+
+    // Usar DocumentFragment para melhor performance
+    const fragment = document.createDocumentFragment();
 
     models.forEach(model => {
       const card = document.createElement("div");
@@ -52,7 +55,7 @@ fetch(`api/models?site=${encodeURIComponent(site)}`)
       
       card.innerHTML = `
         <div class="thumb-wrapper">
-          ${thumbPath ? `<img class=\"thumb lazy\" data-src=\"${thumbPath}\">` : `<div class=\"thumb placeholder\">Sem thumbnail</div>`}
+          ${thumbPath ? `<img class=\"thumb lazy\" data-src=\"${thumbPath}\" loading=\"lazy\">` : `<div class=\"thumb placeholder\">Sem thumbnail</div>`}
           <div class="counts">
             <span class="img-wrap"${imgWrapStyle}>📷 <span class="img-count">${imageCount}</span></span>
             <span class="video-wrap"${videoWrapStyle}>🎥 <span class="video-count">${videoCount}</span></span>
@@ -87,13 +90,15 @@ fetch(`api/models?site=${encodeURIComponent(site)}`)
         });
       }
 
-      grid.appendChild(card);
+      fragment.appendChild(card);
 
       if (thumbPath) {
         const img = card.querySelector('img.lazy');
         if (img) imageObserver.observe(img);
       }
     });
+    
+    grid.appendChild(fragment);
   })
   .catch(err => {
     console.error("Erro ao carregar modelos", err);
