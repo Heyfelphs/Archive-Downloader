@@ -157,6 +157,7 @@ def apply_theme(central_widget, theme_name: str):
     _set(getattr(central_widget, "model_input", None), input_style)
     _set(getattr(central_widget, "site_combo", None), combo_style)
     _set(getattr(central_widget, "theme_combo", None), combo_style)
+    _set(getattr(central_widget, "fapfolder_cookie_input", None), input_style)
 
     button_style = (
         "QPushButton {"
@@ -221,6 +222,7 @@ def apply_theme(central_widget, theme_name: str):
     )
 
     _set(getattr(central_widget, "checar_btn", None), button_style)
+    _set(getattr(central_widget, "fapfolder_cookie_validate_btn", None), button_style)
     _set(getattr(central_widget, "download_btn", None), accent_button_style)
     _set(getattr(central_widget, "pause_btn", None), pause_button_style)
     _set(getattr(central_widget, "cancel_btn", None), cancel_button_style)
@@ -248,6 +250,8 @@ def apply_theme(central_widget, theme_name: str):
 
     for label in getattr(central_widget, "labels", {}).values():
         _set(label, label_style)
+
+    _set(getattr(central_widget, "fapfolder_cookie_label", None), label_style)
 
     status_label = None
     if isinstance(getattr(central_widget, "labels", None), dict):
@@ -518,6 +522,14 @@ def build_ui(parent):
     central_widget.log_widget = log_widget
     central_widget.thumbnails_container = thumbnails_container
     central_widget.thumb_list = thumbnails_container
+    if hasattr(left_panel, "fapfolder_cookie_input"):
+        central_widget.fapfolder_cookie_input = left_panel.fapfolder_cookie_input
+    if hasattr(left_panel, "fapfolder_cookie_label"):
+        central_widget.fapfolder_cookie_label = left_panel.fapfolder_cookie_label
+    if hasattr(left_panel, "fapfolder_cookie_container"):
+        central_widget.fapfolder_cookie_container = left_panel.fapfolder_cookie_container
+    if hasattr(left_panel, "fapfolder_cookie_validate_btn"):
+        central_widget.fapfolder_cookie_validate_btn = left_panel.fapfolder_cookie_validate_btn
     if hasattr(left_panel, "picazor_threads_input"):
         central_widget.picazor_threads_input = left_panel.picazor_threads_input
     if hasattr(left_panel, "picazor_batch_input"):
@@ -532,8 +544,44 @@ def build_ui(parent):
         if hasattr(central_widget, "picazor_container"):
             is_picazor = site_combo.currentText() == "Picazor"
             central_widget.picazor_container.setVisible(is_picazor)
+        if hasattr(central_widget, "fapfolder_cookie_container"):
+            is_fapfolder = site_combo.currentText() == "Fapfolder"
+            central_widget.fapfolder_cookie_container.setVisible(is_fapfolder)
 
     site_combo.currentIndexChanged.connect(on_site_changed)
+
+    def on_validate_cookie_clicked():
+        site_label, model_name = normalize_site_model(site_combo, model_input)
+        if site_label != "Fapfolder":
+            QMessageBox.information(central_widget, "Validar cookie", "Selecione o site Fapfolder primeiro.")
+            return
+        cookie_input = getattr(central_widget, "fapfolder_cookie_input", None)
+        cookie = cookie_input.text().strip() if cookie_input else ""
+        if not cookie:
+            QMessageBox.warning(central_widget, "Cookie vazio", "Cole o cookie antes de validar.")
+            return
+        if not model_name:
+            QMessageBox.warning(central_widget, "Modelo vazio", "Informe o modelo ou cole o link do grupo.")
+            return
+
+        central_widget.labels["status"].setText("Status: Validando cookie...")
+        try:
+            from core.fapfolder_client import FapfolderClient
+
+            client = FapfolderClient(cookie=cookie, delay=0.0, max_pages=1)
+            ok, reason = client.validate_cookie(model_name)
+            if ok:
+                central_widget.labels["status"].setText("Status: Cookie valido")
+                add_log_message(central_widget.log_widget, "Cookie valido para Fapfolder")
+            else:
+                central_widget.labels["status"].setText("Status: Cookie invalido")
+                add_log_message(central_widget.log_widget, f"Cookie invalido: {reason}", warning=True)
+        except Exception as exc:
+            central_widget.labels["status"].setText("Status: Erro ao validar cookie")
+            add_log_message(central_widget.log_widget, f"Erro ao validar cookie: {exc}", error=True)
+
+    if hasattr(central_widget, "fapfolder_cookie_validate_btn"):
+        central_widget.fapfolder_cookie_validate_btn.clicked.connect(on_validate_cookie_clicked)
     # default number of columns for thumbnails grid (fixo em 4)
     central_widget.thumbnails_columns = 4
     # limit how many thumbnails are kept in the grid
@@ -559,7 +607,6 @@ def build_ui(parent):
             labels_dict["destino"].setVisible(True)
         else:
             labels_dict["destino"].setVisible(False)
-        labels_dict["destino"].setVisible(True)
 
     central_widget._update_destino_label = update_destino_label
     choose_folder_cb = central_widget.checkboxes.get("escolher_pasta")
@@ -753,6 +800,49 @@ def create_top_section(parent):
     def on_checar_clicked():
         site_label, model_name = normalize_site_model(site_combo, model_input)
         url = build_url(site_label, model_name)
+        
+        # Validate Fapfolder cookie before fetch
+        if site_label == "Fapfolder":
+            cookie_input = getattr(parent, "fapfolder_cookie_input", None)
+            cookie = cookie_input.text().strip() if cookie_input else ""
+            if not cookie:
+                msg = (
+                    "O Fapfolder exige login para acessar conteúdo.\n\n"
+                    "Como obter o cookie:\n"
+                    "1. Faça login no fapfolder.club\n"
+                    "2. Abra o DevTools (F12) → Network\n"
+                    "3. Marque o filtro XHR/Fetch e Preserve log\n"
+                    "4. Clique em 'See More' na página\n"
+                    "5. Clique em 'data/load.php' na lista\n"
+                    "6. Em Headers, copie o valor de Cookie completo\n"
+                    "7. Cole no campo 'Cookie (Fapfolder)' e clique 'Validar'"
+                )
+                QMessageBox.warning(parent, "Cookie necessário", msg)
+                return
+            # Validate cookie
+            parent.labels["status"].setText("Status: Validando cookie...")
+            try:
+                from core.fapfolder_client import FapfolderClient
+
+                client = FapfolderClient(cookie=cookie, delay=0.0, max_pages=1)
+                ok, reason = client.validate_cookie(model_name)
+                if not ok:
+                    msg = (
+                        f"Cookie inválido: {reason}\n\n"
+                        "Certifique-se de:\n"
+                        "1. Estar logado no fapfolder.club\n"
+                        "2. Copiar o cookie da requisição 'data/load.php'\n"
+                        "3. Colar o valor completo (todos os cookies)\n\n"
+                        "Se o cookie expirou, faça login novamente e obtenha um novo."
+                    )
+                    QMessageBox.warning(parent, "Cookie inválido", msg)
+                    parent.labels["status"].setText("Status: Cookie inválido")
+                    return
+            except Exception as exc:
+                QMessageBox.critical(parent, "Erro ao validar cookie", f"Erro: {exc}")
+                parent.labels["status"].setText("Status: Erro ao validar cookie")
+                return
+        
         # Limpa painel de log e thumbnails ao clicar em checar
         if hasattr(parent, "log_widget"):
             parent.log_widget.clear()
@@ -785,9 +875,11 @@ def create_top_section(parent):
         picazor_threads = FIXED_PICAZOR_THREADS
         picazor_batch = picazor_batch_input.value() if picazor_batch_input else PICAZOR_CHECK_BATCH_DEFAULT
         picazor_delay = FIXED_PICAZOR_DELAY
+        fapfolder_cookie_input = getattr(parent, "fapfolder_cookie_input", None)
+        fapfolder_cookie = fapfolder_cookie_input.text().strip() if fapfolder_cookie_input else ""
 
         # Create worker thread
-        worker = FetchWorker(url, picazor_threads, picazor_batch, picazor_delay)
+        worker = FetchWorker(url, picazor_threads, picazor_batch, picazor_delay, fapfolder_cookie=fapfolder_cookie or None)
         worker.progress.connect(lambda count: on_fetch_progress(parent, count))
         worker.finished.connect(lambda data: on_fetch_complete(parent, data, checar_btn, download_btn))
         worker.error.connect(lambda err: on_fetch_error(parent, err, checar_btn))
@@ -956,6 +1048,8 @@ def create_top_section(parent):
         picazor_threads = FIXED_PICAZOR_THREADS
         picazor_batch = picazor_batch_input.value() if picazor_batch_input else PICAZOR_CHECK_BATCH_DEFAULT
         picazor_delay = FIXED_PICAZOR_DELAY
+        fapfolder_cookie_input = getattr(parent, "fapfolder_cookie_input", None)
+        fapfolder_cookie = fapfolder_cookie_input.text().strip() if fapfolder_cookie_input else ""
 
         # Create download worker thread
         # For Picazor, pass total_files (indices count) even though real file count is unknown
@@ -969,6 +1063,7 @@ def create_top_section(parent):
             picazor_threads=picazor_threads,
             picazor_batch=picazor_batch,
             picazor_delay=picazor_delay,
+            fapfolder_cookie=fapfolder_cookie or None,
         )
         download_worker.progress_update.connect(lambda data: on_download_progress_update(parent, data))
         download_worker.finished.connect(lambda: on_download_complete(parent, checar_btn, download_btn))
@@ -1611,6 +1706,42 @@ def create_left_panel():
     escolher_pasta.setStyleSheet(checkbox_style)
     escolher_pasta.setToolTip("Se marcado, pergunta a pasta de destino antes do download")
     layout.addWidget(escolher_pasta)
+
+    fapfolder_cookie_container = QWidget()
+    fapfolder_cookie_layout = QVBoxLayout(fapfolder_cookie_container)
+    fapfolder_cookie_layout.setContentsMargins(0, 0, 0, 0)
+    fapfolder_cookie_layout.setSpacing(4)
+    fapfolder_cookie_label = QLabel("Cookie (Fapfolder)")
+    fapfolder_cookie_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+    cookie_row = QWidget()
+    cookie_row_layout = QHBoxLayout(cookie_row)
+    cookie_row_layout.setContentsMargins(0, 0, 0, 0)
+    cookie_row_layout.setSpacing(6)
+    fapfolder_cookie_input = QLineEdit()
+    fapfolder_cookie_input.setPlaceholderText("Cole aqui o cookie")
+    fapfolder_cookie_input.setStyleSheet(
+        "QLineEdit { background-color: #2d2d2d; color: #ffffff; border: 1px solid #444; padding: 4px; border-radius: 3px; }"
+    )
+    fapfolder_cookie_input.setMinimumHeight(24)
+    fapfolder_cookie_validate_btn = QPushButton("Validar")
+    fapfolder_cookie_validate_btn.setMinimumHeight(24)
+    fapfolder_cookie_validate_btn.setMinimumWidth(70)
+    fapfolder_cookie_validate_btn.setStyleSheet(
+        "QPushButton { background-color: #2d2d2d; color: #ffffff; border: 1px solid #444; border-radius: 3px; font-weight: bold; }"
+        "QPushButton:hover:!disabled { background-color: #3d3d3d; }"
+        "QPushButton:pressed { background-color: #444; }"
+        "QPushButton:disabled { color: #666; background-color: #1a1a1a; border: 1px solid #333; }"
+    )
+    cookie_row_layout.addWidget(fapfolder_cookie_input, 1)
+    cookie_row_layout.addWidget(fapfolder_cookie_validate_btn, 0)
+    fapfolder_cookie_layout.addWidget(fapfolder_cookie_label)
+    fapfolder_cookie_layout.addWidget(cookie_row)
+    fapfolder_cookie_container.setVisible(False)
+    layout.addWidget(fapfolder_cookie_container)
+    left_widget.fapfolder_cookie_container = fapfolder_cookie_container
+    left_widget.fapfolder_cookie_input = fapfolder_cookie_input
+    left_widget.fapfolder_cookie_label = fapfolder_cookie_label
+    left_widget.fapfolder_cookie_validate_btn = fapfolder_cookie_validate_btn
 
     # Container para Picazor settings (será mostrado/escondido conforme site selecionado)
     picazor_container = QWidget()

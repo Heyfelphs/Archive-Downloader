@@ -4,6 +4,7 @@ SUPPORTED_SITES = {
     "Fapello": "https://fapello.com",
     "Picazor": "https://picazor.com",
     "Leakgallery": "https://leakgallery.com",
+    "Fapfolder": "https://fapfolder.club",
 }
 
 
@@ -22,12 +23,16 @@ def parse_supported_link(text: str):
         site_label = "Picazor"
     elif "leakgallery.com" in host:
         site_label = "Leakgallery"
+    elif "fapfolder.club" in host:
+        site_label = "Fapfolder"
     else:
         return None
     parts = [p for p in parsed.path.split("/") if p]
     if not parts:
         return None
     if site_label == "Picazor" and parts[0].lower() == "pt" and len(parts) > 1:
+        return site_label, parts[1]
+    if site_label == "Fapfolder" and parts[0].lower() == "groups" and len(parts) > 1:
         return site_label, parts[1]
     return site_label, parts[0]
 
@@ -48,6 +53,8 @@ def build_url(site_label: str, model_text: str):
         return f"{base}/pt/{model_text}/"
     if site_label == "Leakgallery":
         return f"{base}/{model_text}"
+    if site_label == "Fapfolder":
+        return f"{base}/groups/{model_text}"
     return f"{base}/{model_text}/"
 
 

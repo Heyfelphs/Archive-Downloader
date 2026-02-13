@@ -2,22 +2,49 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Modelo</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<a href="index.html">⬅ Voltar ao catálogo</a>
-
-<h1 id="model-name"></h1>
+<div class="nav-bar">
+  <div id="model-name" class="nav-title"></div>
+  <div class="manage-control">
+    <span class="manage-label">Gerenciar</span>
+    <div class="manage-toggle">
+      <input id="manage-toggle-model" type="checkbox">
+      <span class="toggle-slider"></span>
+    </div>
+  </div>
+  <button class="nav-btn" onclick="history.back()">⬅ Voltar</button>
+  <button class="nav-btn" onclick="window.location.href='index.html'">🏠 Início</button>
+</div>
 
 <p id="model-info"></p>
 
-<h2>📷 Imagens (<span id="img-count">0</span>)</h2>
+<h2 id="images-header" class="section-header">
+  📷 Imagens (<span id="img-count">0</span>)
+  <button id="toggle-images" class="section-toggle" type="button">Ocultar</button>
+</h2>
 <div id="images" class="grid"></div>
 
-<h2>🎥 Vídeos (<span id="video-count">0</span>)</h2>
+<h2 id="videos-header" class="section-header">
+  🎥 Vídeos (<span id="video-count">0</span>)
+  <button id="toggle-videos" class="section-toggle" type="button">Ocultar</button>
+</h2>
 <div id="videos" class="grid"></div>
+
+<div id="image-preview" class="preview hidden">
+  <div class="preview-backdrop"></div>
+  <div class="preview-content">
+    <button id="preview-close" class="preview-close" type="button">Fechar</button>
+    <button id="preview-prev" class="preview-nav" type="button">&#9664;</button>
+    <img id="preview-img" alt="Preview">
+    <video id="preview-video" controls class="preview-video"></video>
+    <button id="preview-next" class="preview-nav" type="button">&#9654;</button>
+  </div>
+</div>
 
 <script src="model.js"></script>
 </body>

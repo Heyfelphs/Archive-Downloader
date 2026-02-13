@@ -3,19 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>📁 Catálogo de Sites</title>
+  <title>Modelos do Site</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <div class="nav-bar">
-  <div class="nav-title">📁 Catálogo de Sites</div>
+  <div id="site-name" class="nav-title">Modelos</div>
+  <div class="manage-control">
+    <span class="manage-label">Gerenciar</span>
+    <div class="manage-toggle">
+      <input id="manage-toggle-site" type="checkbox">
+      <span class="toggle-slider"></span>
+    </div>
+  </div>
   <button class="nav-btn" onclick="history.back()">⬅ Voltar</button>
   <button class="nav-btn" onclick="window.location.href='index.html'">🏠 Início</button>
 </div>
 
 <div id="catalog" class="grid"></div>
 
-<script src="script.js"></script>
+<script src="site.js"></script>
 </body>
 </html>

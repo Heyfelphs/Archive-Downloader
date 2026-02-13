@@ -20,6 +20,7 @@ from config import (
 FIXED_PICAZOR_THREADS = 4
 FIXED_PICAZOR_DELAY = 0.1
 from core.fapello_client import get_media_info, get_total_files
+from core.fapfolder_client import FapfolderClient
 from core.leakgallery_client import LeakgalleryClient
 from core.picazor_client import PicazorClient
 from core.worker import prepare_filename
@@ -79,8 +80,18 @@ def _extract_site_label(url: str) -> str:
         return "Fapello"
     if "leakgallery.com" in url:
         return "Leakgallery"
+    if "fapfolder.club" in url:
+        return "Fapfolder"
     parsed = urlparse(url)
     return parsed.netloc or "Site"
+
+
+def _extension_from_url(file_url: str, media_type: str) -> str:
+    path = urlparse(file_url).path
+    _, ext = os.path.splitext(path)
+    if ext:
+        return ext
+    return ".mp4" if media_type == "video" else ".jpg"
 
 
 def _media_list_for_index(
@@ -107,6 +118,8 @@ def _media_list_for_index(
         client = LeakgalleryClient()
         media = client.get_media_by_id(index)
         media_list = [(media.url, media.media_type)] if media else []
+    elif "fapfolder.club" in base_url:
+        media_list = []
     else:
         media_list = []
         file_url, media_type = get_media_info(f"{base_url.rstrip('/')}/{index}")
@@ -126,6 +139,8 @@ def download_worker_with_progress(
     download_videos: bool = True,
     worker=None,
     download_chunk_size: int | None = None,
+    media_override: tuple[str, str] | None = None,
+    auth_cookie: str | None = None,
 ):
     if worker and getattr(worker, "stop_requested", False):
         return
@@ -133,12 +148,15 @@ def download_worker_with_progress(
     if not _wait_if_paused(worker):
         return
 
-    media_list = _media_list_for_index(
-        base_url,
-        index,
-        download_images=download_images,
-        download_videos=download_videos,
-    )
+    if media_override is not None:
+        media_list = [media_override]
+    else:
+        media_list = _media_list_for_index(
+            base_url,
+            index,
+            download_images=download_images,
+            download_videos=download_videos,
+        )
 
     if not media_list:
         stats.increment_skipped()
@@ -160,6 +178,8 @@ def download_worker_with_progress(
         referer = f"{base_url.rstrip('/')}/{index}"
     if "leakgallery.com" in base_url:
         referer = f"{base_url.rstrip('/')}/{index}"
+    if "fapfolder.club" in base_url:
+        referer = base_url
     for idx, (file_url, media_type) in enumerate(media_list):
         if worker and getattr(worker, "stop_requested", False):
             return
@@ -174,6 +194,9 @@ def download_worker_with_progress(
                 filename = f"{model_name}_{index}{ext}"
         elif "leakgallery.com" in base_url:
             ext = ".mp4" if media_type == "video" else ".jpg"
+            filename = f"{model_name}_{index}{ext}"
+        elif "fapfolder.club" in base_url:
+            ext = _extension_from_url(file_url, media_type)
             filename = f"{model_name}_{index}{ext}"
         else:
             filename = prepare_filename(file_url, f"{index}_{idx+1}", media_type)
@@ -215,6 +238,7 @@ def download_worker_with_progress(
                 referer=referer,
                 origin=origin,
                 use_cloudscraper=use_cloudscraper,
+                cookie=auth_cookie,
                 progress_callback=_file_progress,
                 chunk_size=download_chunk_size or 256 * 1024,
             )
@@ -256,6 +280,7 @@ def download_orchestrator_with_progress(
     link_check_delay: Optional[float] = None,
     max_items: Optional[int] = None,
     download_chunk_size: Optional[int] = None,
+    auth_cookie: Optional[str] = None,
 ):
     stats = DownloadStats()
     model_name = _extract_model_name(url)
@@ -271,21 +296,28 @@ def download_orchestrator_with_progress(
     if workers is None:
         workers = FIXED_PICAZOR_THREADS
 
-    def worker_wrapper(idx: int):
+    def worker_wrapper(idx: int | tuple[int, tuple[str, str]]):
         if worker and getattr(worker, "stop_requested", False):
             return None
         if not _wait_if_paused(worker):
             return None
+        media_override = None
+        index = idx
+        if isinstance(idx, tuple) and len(idx) == 2 and isinstance(idx[0], int):
+            index = idx[0]
+            media_override = idx[1]
         download_worker_with_progress(
             url,
             target_dir,
-            idx,
+            index,
             stats,
             progress_callback,
             download_images=download_images,
             download_videos=download_videos,
             worker=worker,
             download_chunk_size=download_chunk_size,
+            media_override=media_override,
+            auth_cookie=auth_cookie,
         )
         return idx
 
@@ -354,6 +386,27 @@ def download_orchestrator_with_progress(
                 total_expected = len(valid_indices)
                 chunk_size = max(1, workers * 2)
                 for _ in pool.imap_unordered(worker_wrapper, valid_indices, chunksize=chunk_size):
+                    if worker and getattr(worker, "stop_requested", False):
+                        pool.terminate()
+                        pool.join()
+                        was_cancelled = True
+                        raise KeyboardInterrupt("Download stopped by user")
+            elif "fapfolder.club" in url:
+                if valid_indices is None:
+                    client = FapfolderClient(cookie=auth_cookie or None)
+                    model_name = _extract_model_name(url)
+                    valid_indices = client.get_media_entries(model_name)
+                entries = list(valid_indices)
+                if download_images and not download_videos:
+                    entries = [e for e in entries if e.media_type == "image"]
+                elif download_videos and not download_images:
+                    entries = [e for e in entries if e.media_type == "video"]
+                if max_items is not None:
+                    entries = entries[:max_items]
+                total_expected = len(entries)
+                indexed_entries = list(enumerate([(e.url, e.media_type) for e in entries], start=1))
+                chunk_size = max(1, workers * 2)
+                for _ in pool.imap_unordered(worker_wrapper, indexed_entries, chunksize=chunk_size):
                     if worker and getattr(worker, "stop_requested", False):
                         pool.terminate()
                         pool.join()

@@ -157,6 +157,11 @@ class AppWindow(QMainWindow):
             if isinstance(last_folder, str) and last_folder.strip():
                 central_widget.last_chosen_folder = last_folder
 
+            # Restaurar cookie do Fapfolder
+            fapfolder_cookie = state.get('fapfolder_cookie', '')
+            if hasattr(central_widget, 'fapfolder_cookie_input') and isinstance(fapfolder_cookie, str):
+                central_widget.fapfolder_cookie_input.setText(fapfolder_cookie)
+
             
             if hasattr(central_widget, 'picazor_threads_input'):
                 central_widget.picazor_threads_input.setValue(FIXED_PICAZOR_THREADS)
@@ -212,6 +217,7 @@ class AppWindow(QMainWindow):
                 'last_model': getattr(central, 'model_input', None).text() if hasattr(central, 'model_input') else '',
                 'picazor_settings': picazor_settings,
                 'last_chosen_folder': getattr(central, 'last_chosen_folder', ''),
+                'fapfolder_cookie': getattr(central, 'fapfolder_cookie_input', None).text() if hasattr(central, 'fapfolder_cookie_input') else '',
                 'theme': theme_from_label(getattr(central, 'theme_combo', None).currentText()) if hasattr(central, 'theme_combo') else 'dark',
             }
             save_ui_state(state)

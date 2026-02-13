@@ -23,12 +23,13 @@ class FetchWorker(QThread):
     error = Signal(str)
     progress = Signal(int)
 
-    def __init__(self, url: str, picazor_threads: int, picazor_batch: int, picazor_delay: float):
+    def __init__(self, url: str, picazor_threads: int, picazor_batch: int, picazor_delay: float, fapfolder_cookie: str | None = None):
         super().__init__()
         self.url = url
         self.picazor_threads = picazor_threads
         self.picazor_batch = picazor_batch
         self.picazor_delay = picazor_delay
+        self.fapfolder_cookie = fapfolder_cookie
         self.stop_requested = False
         self.is_paused = False
         self._pause_event = threading.Event()
@@ -86,6 +87,25 @@ class FetchWorker(QThread):
                 parts = [p for p in self.url.split("/") if p]
                 model = parts[-1] if parts else ""
                 valid_indices = client.get_media_ids(model, progress_callback=progress_wrapper)
+                total_files = len(valid_indices)
+                print(f"[FetchWorker] Media found: {total_files} files")
+            elif "fapfolder.club" in self.url:
+                print("[FetchWorker] Detected Fapfolder link. Starting analysis...")
+                from core.fapfolder_client import FapfolderClient
+
+                client = FapfolderClient(cookie=self.fapfolder_cookie, delay=self.picazor_delay)
+                if self.stop_requested:
+                    self.error.emit("Analise cancelada")
+                    return
+
+                def progress_wrapper(count: int):
+                    if not self._wait_if_paused():
+                        return
+                    self.progress.emit(count)
+
+                parts = [p for p in self.url.split("/") if p]
+                model = parts[-1] if parts else ""
+                valid_indices = client.get_media_entries(model, progress_callback=progress_wrapper)
                 total_files = len(valid_indices)
                 print(f"[FetchWorker] Media found: {total_files} files")
             else:
@@ -184,6 +204,7 @@ class DownloadWorker(QThread):
         picazor_threads: int = FIXED_PICAZOR_THREADS,
         picazor_batch: int = PICAZOR_CHECK_BATCH_DEFAULT,
         picazor_delay: float = FIXED_PICAZOR_DELAY,
+        fapfolder_cookie: str | None = None,
     ):
         super().__init__()
         self.url = url
@@ -195,6 +216,7 @@ class DownloadWorker(QThread):
         self.picazor_threads = picazor_threads
         self.picazor_batch = picazor_batch
         self.picazor_delay = picazor_delay
+        self.fapfolder_cookie = fapfolder_cookie
         self.processed_count = 0
         self.is_paused = False
         self.stop_requested = False
@@ -279,6 +301,7 @@ class DownloadWorker(QThread):
                 link_check_batch=self.picazor_batch,
                 link_check_delay=self.picazor_delay,
                 download_chunk_size=FIXED_DOWNLOAD_CHUNK_SIZE,
+                auth_cookie=self.fapfolder_cookie,
             )
             self.finished.emit()
         except Exception as exc:

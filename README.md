@@ -117,6 +117,16 @@ Archive-Downloader/
    python main.py
    ```
 
+## 📚 Catálogo (UI independente)
+
+Para rodar a pasta `ui/catalog` de forma independente como site estático:
+
+```bash
+python catalog_server.py --port 8008
+```
+
+Abra no navegador: http://localhost:8008
+
 ## ✅ Testes
 
 Para rodar os testes automatizados:

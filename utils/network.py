@@ -48,6 +48,7 @@ def download_binary(
     referer: str | None = None,
     origin: str | None = None,
     use_cloudscraper: bool = False,
+    cookie: str | None = None,
 ) -> bytes:
     session = _get_session()
     headers = {}
@@ -55,6 +56,8 @@ def download_binary(
         headers["Referer"] = referer
     if origin:
         headers["Origin"] = origin
+    if cookie:
+        headers["Cookie"] = cookie
     if use_cloudscraper:
         scraper = _get_cloudscraper()
         # Per-request headers (e.g. Referer/Origin) override the base headers
@@ -74,6 +77,7 @@ def download_binary_to_file(
     referer: str | None = None,
     origin: str | None = None,
     use_cloudscraper: bool = False,
+    cookie: str | None = None,
     progress_callback=None,
     chunk_size: int = 256 * 1024,
 ) -> None:
@@ -83,6 +87,8 @@ def download_binary_to_file(
         headers["Referer"] = referer
     if origin:
         headers["Origin"] = origin
+    if cookie:
+        headers["Cookie"] = cookie
     if use_cloudscraper:
         scraper = _get_cloudscraper()
         response = scraper.get(
