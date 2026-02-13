@@ -12,8 +12,7 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from typing import Optional, Tuple, Dict, List, Any
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from dataclasses import dataclass
 
 
 DEFAULT_PORT = 8008
@@ -605,17 +604,6 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         
         return images, videos
     
-    @staticmethod
-    def _format_bytes(bytes_size: int) -> str:
-        """Formata bytes em formato legível"""
-        size_float = float(bytes_size)
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size_float < 1024.0:
-                return f"{size_float:.2f} {unit}"
-            size_float /= 1024.0
-        return f"{size_float:.2f} PB"
-
-
 def run_server(port: int, directory: Path, models_dir: Path) -> None:
     """Inicia o servidor com thread pool"""
     handler = functools.partial(
