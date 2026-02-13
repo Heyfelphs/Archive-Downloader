@@ -12,3 +12,5 @@ build/
 .pytest_cache/
 .coverage
 
+# Cache de duplicatas
+.duplicate_cache.json

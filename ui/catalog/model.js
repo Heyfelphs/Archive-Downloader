@@ -139,31 +139,23 @@ if (manageToggle) {
 }
 
 function deleteFile(filename, element) {
-  const confirmed = window.confirm(`Excluir arquivo "${filename}"?`);
-  if (!confirmed) return;
-  
-  fetch("/api/delete_file", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ site, model, file: filename }),
-  })
-    .then(res => res.json())
-    .then(result => {
-      if (result && result.status === "deleted") {
-        // Remove from arrays
+  // Usar DeleteManager para gerenciar a exclusão
+  const deleteManager = DeleteManager.createFileDelete(
+    site,
+    model,
+    filename,
+    element,
+    {
+      onSuccess: () => {
+        // Atualizar arrays
         imageList = imageList.filter(f => f !== filename);
         videoList = videoList.filter(f => f !== filename);
         
-        // Remove the element from DOM
-        if (element && element.parentNode) {
-          element.remove();
-        }
-        
-        // Update counters
+        // Atualizar contadores
         imgCountEl.textContent = imageList.length;
         videoCountEl.textContent = videoList.length;
         
-        // Hide sections if empty
+        // Esconder seções se vazias
         if (imageList.length === 0) {
           imagesGrid.style.display = "none";
           if (imagesHeader) imagesHeader.style.display = "none";
@@ -173,12 +165,11 @@ function deleteFile(filename, element) {
           if (videosHeader) videosHeader.style.display = "none";
         }
       }
-    })
-    .catch(err => {
-      console.error("Erro ao deletar arquivo", err);
-      alert("Erro ao deletar arquivo");
-    });
-}
+    }
+  );
+  
+  deleteManager.execute();
+}}
 
 fetch(`api/model?site=${encodeURIComponent(site)}&model=${encodeURIComponent(model)}`)
   .then(res => res.json())

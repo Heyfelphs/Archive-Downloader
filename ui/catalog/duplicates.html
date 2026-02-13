@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>🔍 Duplicatas</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="nav-bar">
+    <div class="nav-title">🔍 Duplicatas</div>
+    <button class="nav-btn" id="btn-cancel" style="display: none;">⏹️ Cancelar</button>
+    <button class="nav-btn nav-btn-secondary" onclick="window.location.href='index.html'">⬅ Voltar</button>
+  </div>
+
+  <main class="duplicates-page">
+    <div class="scan-status">
+      <div class="scan-title">🔍 Verificação de Duplicatas</div>
+      <div class="scan-subtitle" id="statusText">Clique no botão abaixo para iniciar a verificação</div>
+      <button class="nav-btn" id="btn-start-scan" style="margin-top: 20px; padding: 12px 24px; font-size: 16px;">▶️ Iniciar Verificação</button>
+    </div>
+
+    <div class="duplicates-summary" id="summary">
+      <div class="summary-item">
+        <div class="summary-label">📁 Arquivos Verificados</div>
+        <div class="summary-value" id="stat-total">0</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">#️⃣ Arquivos Hasheados</div>
+        <div class="summary-value" id="stat-hashed">0</div>
+      </div>
+      <div class="summary-item cache-stat">
+        <div class="summary-label">⚡ Cache</div>
+        <div class="summary-value cache-value" id="stat-cache">0%</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">🔄 Grupos de Duplicatas</div>
+        <div class="summary-value" id="stat-groups">0</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">💾 Espaço Desperdiçado</div>
+        <div class="summary-value" id="stat-waste">0 Bytes</div>
+      </div>
+    </div>
+
+    <section class="duplicates-list" id="duplicatesList"></section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- Modal de confirmação -->
+  <div id="confirmModal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2 class="modal-title">✅ Análise Concluída!</h2>
+      <div class="modal-body">
+        <p id="modalMessage">Duplicatas encontradas.</p>
+        <div class="modal-stats">
+          <div class="modal-stat-item">
+            <span class="modal-stat-label">Grupos:</span>
+            <span class="modal-stat-value" id="modal-groups">0</span>
+          </div>
+          <div class="modal-stat-item">
+            <span class="modal-stat-label">Espaço:</span>
+            <span class="modal-stat-value" id="modal-waste">0 Bytes</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn-primary" id="confirmShowBtn">📋 Ver Duplicatas</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="delete-manager.js"></script>
+  <script src="duplicates.js"></script>
+</body>
+</html>

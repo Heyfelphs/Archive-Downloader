@@ -5,6 +5,7 @@ import hashlib
 import http.server
 import json
 import os
+import queue
 import random
 import shutil
 import socketserver
@@ -16,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 from typing import Optional, Tuple, Dict, List, Any
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
+from core.verificar_duplicatas import find_duplicates
 
 
 DEFAULT_PORT = 8008
@@ -111,9 +113,11 @@ model_info_cache = CacheManager(max_size=2000, ttl=CACHE_TTL)
 media_list_cache = CacheManager(max_size=1000, ttl=CACHE_TTL)
 
 # Estado de scan de duplicatas
-scan_progress = {"current": 0, "total": 0, "is_scanning": False}
+scan_progress = {"current": 0, "total": 0, "is_scanning": False, "cancel_requested": False, "cancelled": False}
 scan_results = None
 scan_lock = threading.Lock()
+scan_listeners: list[queue.Queue] = []
+scan_listeners_lock = threading.Lock()
 HASH_CACHE_FILE = "duplicates_cache.json"
 
 
@@ -121,6 +125,18 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, directory: str | None = None, models_dir: Path | None = None, **kwargs):
         self.models_dir = models_dir
         super().__init__(*args, directory=directory, **kwargs)
+
+    def handle_one_request(self) -> None:
+        """Override para tratar ConnectionResetError silenciosamente"""
+        try:
+            super().handle_one_request()
+        except ConnectionResetError:
+            # Conexão foi cancelada pelo cliente (normal em SSE)
+            pass
+        except Exception as e:
+            # Outros erros são logados normalmente
+            if not isinstance(e, (BrokenPipeError, ConnectionRefusedError)):
+                super().handle_one_request()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -136,11 +152,11 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/scan_duplicates":
             self._handle_scan_duplicates()
             return
+        if parsed.path == "/api/scan_stream":
+            self._handle_scan_stream()
+            return
         if parsed.path == "/api/scan_progress":
             self._handle_scan_progress()
-            return
-        if parsed.path == "/api/clear_cache":
-            self._handle_clear_cache()
             return
         if parsed.path == "/api/cache_stats":
             self._handle_cache_stats()
@@ -163,6 +179,9 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/delete_duplicate":
             self._handle_delete_duplicate()
+            return
+        if parsed.path == "/api/cancel_scan":
+            self._handle_cancel_scan()
             return
         self.send_error(404, "Not found")
 
@@ -318,25 +337,40 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_media(self, path: str) -> None:
         """Serve arquivos de mídia com cache HTTP"""
-        parts = path.split("/")
-        if len(parts) < 5:
+        # Remove o prefixo /media/
+        if not path.startswith("/media/"):
             self.send_error(404, "File not found")
             return
-
-        _, _, site, model, filename = parts[0:5]
-        safe_site = self._safe_site_name(site)
-        safe_model = self._safe_site_name(model)
-        safe_file = Path(filename).name
-        if not safe_site or not safe_model or not safe_file:
+        
+        rel_path = path[7:]  # Remove "/media/"
+        
+        if not rel_path:
             self.send_error(404, "File not found")
             return
-
+        
         if not self.models_dir:
             self.send_error(404, "File not found")
             return
-
-        file_path = self.models_dir / safe_site / safe_model / safe_file
+        
+        # Construir caminho do arquivo
+        # Normalizar separadores para o sistema operacional
+        rel_path = rel_path.replace("/", os.sep)
+        file_path = self.models_dir / rel_path
+        
+        # Validar que o arquivo está dentro do models_dir
+        try:
+            file_path = file_path.resolve()
+            if not str(file_path).startswith(str(self.models_dir.resolve())):
+                print(f"[SECURITY] Tentativa de acesso fora do diretório: {file_path}")
+                self.send_error(403, "Forbidden")
+                return
+        except Exception as e:
+            print(f"[ERROR] Erro ao resolver caminho de mídia: {e}")
+            self.send_error(404, "File not found")
+            return
+        
         if not file_path.exists() or not file_path.is_file():
+            print(f"[DEBUG] Arquivo de mídia não encontrado: {file_path}")
             self.send_error(404, "File not found")
             return
 
@@ -492,24 +526,16 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "models_dir_missing"}, status=404)
             return
         
-        # Se já está executando, retornar erro
-        with scan_lock:
-            if scan_progress["is_scanning"]:
-                self._send_json({"error": "scan_in_progress"}, status=409)
-                return
-        
-        # Iniciar scan em thread separada
-        scan_thread = threading.Thread(
-            target=self._run_scan_duplicates_optimized,
-            daemon=True
-        )
-        scan_thread.start()
+        start_error = self._start_scan_thread()
+        if start_error:
+            self._send_json({"error": start_error}, status=409 if start_error == "scan_in_progress" else 404)
+            return
         
         # Retornar resposta imediata
         self._send_json({"status": "started", "message": "Scan iniciado com processamento otimizado"})
     
     def _run_scan_duplicates_optimized(self) -> None:
-        """Executa scan de duplicatas otimizado com processamento em chunks"""
+        """Executa scan de duplicatas usando o verificador compartilhado"""
         global scan_progress, scan_results
         
         print("[INFO] Iniciando scan de duplicatas otimizado...")
@@ -518,91 +544,85 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             print("[ERROR] models_dir não está definido")
             return
         
-        valid_extensions = {
-            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp',
-            '.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.m4v'
-        }
-
-        # Carregar cache existente
-        hash_cache = self._load_hash_cache()
-        cache_hits = 0
-        cache_misses = 0
-
         with scan_lock:
             scan_progress["is_scanning"] = True
             scan_progress["current"] = 0
             scan_progress["total"] = 0
+            scan_progress["cancel_requested"] = False
+            scan_progress["cancelled"] = False
             scan_results = None
-        
-        # Coletar lista de arquivos primeiro (mais rápido)
-        print("[INFO] Coletando lista de arquivos...")
-        files_to_process = []
-        
-        for root, _, files in os.walk(self.models_dir):
-            for filename in files:
-                file_extension = os.path.splitext(filename)[1].lower()
-                if file_extension in valid_extensions:
-                    file_path = os.path.join(root, filename)
-                    rel_path = os.path.relpath(file_path, self.models_dir)
-                    files_to_process.append((file_path, rel_path))
-        
-        total_files = len(files_to_process)
-        with scan_lock:
-            scan_progress["total"] = total_files
-        
-        print(f"[INFO] Total de arquivos a processar: {total_files}")
-        
-        # Processar em chunks para melhor performance
-        hashes = defaultdict(list)
-        new_cache = {}
-        files_checked = 0
-        chunk_size = SCAN_CHUNK_SIZE
-        
-        for i in range(0, total_files, chunk_size):
-            chunk = files_to_process[i:i + chunk_size]
-            
-            for file_path, rel_path in chunk:
-                # Verificar cache primeiro
-                file_hash = self._get_cached_hash(file_path, rel_path, hash_cache)
-                
-                if file_hash and rel_path in hash_cache:
-                    # Cache hit
-                    cache_hits += 1
-                    new_cache[rel_path] = hash_cache[rel_path]
-                else:
-                    # Cache miss - calcular hash
-                    file_hash = self._calculate_md5_fast(file_path)
-                    cache_misses += 1
-                    
-                    if file_hash:
-                        try:
-                            stats = os.stat(file_path)
-                            new_cache[rel_path] = {
-                                "hash": file_hash,
-                                "size": stats.st_size,
-                                "mtime": stats.st_mtime
-                            }
-                        except Exception:
-                            pass
-                
-                if file_hash:
-                    hashes[file_hash].append(rel_path)
-                    files_checked += 1
-                    
-                    with scan_lock:
-                        scan_progress["current"] = files_checked
-            
-            # Log a cada chunk processado
-            if (i // chunk_size + 1) % 5 == 0:
-                print(f"[INFO] Progresso: {files_checked}/{total_files} arquivos ({(files_checked/total_files*100):.1f}%)")
 
-        # Identificar duplicatas
-        duplicates = {k: v for k, v in hashes.items() if len(v) > 1}
+        def cancel_check() -> bool:
+            with scan_lock:
+                return scan_progress.get("cancel_requested", False)
+
+        def progress_callback(info: dict) -> None:
+            with scan_lock:
+                if info.get("phase") == "scan_done":
+                    scan_progress["total"] = int(info.get("total_candidates", 0))
+                elif info.get("phase") == "hashing":
+                    scan_progress["current"] = int(info.get("current", 0))
+                    total = int(info.get("total", 0))
+                    if total:
+                        scan_progress["total"] = total
+            payload = {
+                "type": "progress",
+                "phase": info.get("phase"),
+                "current": int(info.get("current", 0)),
+                "total": int(info.get("total", 0)),
+                "files_scanned": int(info.get("files_scanned", 0)),
+                "total_candidates": int(info.get("total_candidates", 0))
+            }
+            self._broadcast_scan_event(payload)
+
+        def duplicate_callback(group_key: str, file_list: list[str]) -> None:
+            rel_list = [os.path.relpath(path, self.models_dir) for path in file_list]
+            print(f"[DEBUG] Grupo encontrado com {len(rel_list)} arquivos: {rel_list[0]}")
+            first_file = self.models_dir / rel_list[0]
+            if first_file.exists():
+                file_size = first_file.stat().st_size
+                waste = file_size * (len(rel_list) - 1)
+            else:
+                file_size = 0
+                waste = 0
+            self._broadcast_scan_event({
+                "type": "group",
+                "group": {
+                    "hash": group_key,
+                    "count": len(rel_list),
+                    "files": rel_list,
+                    "size": file_size,
+                    "waste": waste
+                }
+            })
+
+        duplicates, files_checked, files_scanned, total_candidates = find_duplicates(
+            str(self.models_dir),
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+            duplicate_callback=duplicate_callback,
+            return_stats=True
+        )
+
+        if cancel_check():
+            with scan_lock:
+                scan_progress["is_scanning"] = False
+                scan_progress["cancelled"] = True
+                scan_progress["cancel_requested"] = False
+            scan_results = {"error": "cancelled"}
+            self._broadcast_scan_event({"type": "cancelled"})
+            print("[INFO] Scan cancelado pelo usuario.")
+            return
+
+        verified_duplicates = {}
+        for file_hash, file_list in duplicates.items():
+            rel_list = [os.path.relpath(path, self.models_dir) for path in file_list]
+            verified_duplicates[file_hash] = rel_list
         
         duplicate_groups = []
         total_size_waste = 0
         
-        for file_hash, file_list in duplicates.items():
+        for file_hash, file_list in verified_duplicates.items():
             first_file = self.models_dir / file_list[0]
             if first_file.exists():
                 file_size = first_file.stat().st_size
@@ -627,26 +647,33 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             scan_progress["is_scanning"] = False
         
         print(f"[INFO] Scan finalizado!")
-        print(f"  - Arquivos processados: {files_checked}")
-        print(f"  - Grupos duplicados: {len(duplicates)}")
+        print(f"  - Arquivos verificados: {files_scanned}")
+        print(f"  - Arquivos hasheados: {files_checked}")
+        print(f"  - Grupos duplicados: {len(verified_duplicates)}")
         print(f"  - Espaço desperdiçado: {self._format_bytes(total_size_waste)}")
-        print(f"  - Taxa de cache hit: {(cache_hits/(cache_hits+cache_misses)*100):.1f}%" if (cache_hits+cache_misses) > 0 else "N/A")
-        
-        # Salvar cache atualizado
-        self._save_hash_cache(new_cache)
         
         # Armazenar resultados
         scan_results = {
-            "total_files": files_checked,
-            "duplicate_groups": len(duplicates),
+            "total_files": files_scanned,
+            "hashed_files": files_checked,
+            "duplicate_groups": len(verified_duplicates),
             "total_waste_bytes": total_size_waste,
             "duplicates": duplicate_groups,
             "cache_stats": {
-                "hits": cache_hits,
-                "misses": cache_misses,
-                "hit_rate": round((cache_hits / (cache_hits + cache_misses) * 100) if (cache_hits + cache_misses) > 0 else 0, 1)
+                "hits": 0,
+                "misses": 0,
+                "hit_rate": 0.0
             }
         }
+        self._broadcast_scan_event({
+            "type": "complete",
+            "summary": {
+                "total_files": files_scanned,
+                "hashed_files": files_checked,
+                "duplicate_groups": len(verified_duplicates),
+                "total_waste_bytes": total_size_waste
+            }
+        })
 
     def _handle_scan_progress(self) -> None:
         """Retorna o progresso atual do scan"""
@@ -664,37 +691,102 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if scan_progress["is_scanning"]:
                     print(f"[DEBUG] Scanning in progress: {scan_progress['current']}/{scan_progress['total']}")
         
-        self._send_json(response)
-    
-    def _handle_clear_cache(self) -> None:
-        """Limpa todos os caches (hash e memória)"""
-        if not self.models_dir:
-            self._send_json({"error": "models_dir_missing"}, status=404)
+        self._send_json_no_cache(response)
+
+    def _handle_scan_stream(self) -> None:
+        """Stream de eventos SSE para progresso e resultados de duplicatas"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        listener = self._register_scan_listener()
+
+        with scan_lock:
+            self._send_sse({"type": "status", **scan_progress})
+
+        start_error = self._start_scan_thread()
+        if start_error and start_error != "scan_in_progress":
+            self._send_sse({"type": "error", "message": start_error})
+            self._remove_scan_listener(listener)
             return
-        
-        # Limpar cache de hash em disco
-        cache_file = self.models_dir / HASH_CACHE_FILE
-        hash_cleared = False
-        
+
         try:
-            if cache_file.exists():
-                cache_file.unlink()
-                hash_cleared = True
-        except Exception as e:
-            self._send_json({"error": "clear_failed", "message": str(e)}, status=500)
-            return
-        
-        # Limpar caches em memória
-        models_cache.clear()
-        model_info_cache.clear()
-        media_list_cache.clear()
-        
-        self._send_json({
-            "status": "cleared",
-            "hash_cache": "cleared" if hash_cleared else "empty",
-            "memory_caches": "cleared",
-            "message": "Todos os caches foram limpos com sucesso"
-        })
+            while True:
+                try:
+                    event = listener.get(timeout=1.0)
+                except queue.Empty:
+                    self._send_sse_comment(": keep-alive")
+                    continue
+
+                self._send_sse(event)
+
+                if event.get("type") in {"complete", "cancelled", "error"}:
+                    break
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            self._remove_scan_listener(listener)
+
+    def _start_scan_thread(self) -> str | None:
+        if not self.models_dir or not self.models_dir.exists():
+            return "models_dir_missing"
+
+        with scan_lock:
+            if scan_progress.get("is_scanning"):
+                return "scan_in_progress"
+
+        scan_thread = threading.Thread(
+            target=self._run_scan_duplicates_optimized,
+            daemon=True
+        )
+        scan_thread.start()
+        return None
+
+    def _register_scan_listener(self) -> queue.Queue:
+        listener = queue.Queue(maxsize=1000)
+        with scan_listeners_lock:
+            scan_listeners.append(listener)
+        return listener
+
+    def _remove_scan_listener(self, listener: queue.Queue) -> None:
+        with scan_listeners_lock:
+            if listener in scan_listeners:
+                scan_listeners.remove(listener)
+
+    def _broadcast_scan_event(self, event: dict) -> None:
+        with scan_listeners_lock:
+            listeners = list(scan_listeners)
+        for listener in listeners:
+            try:
+                listener.put_nowait(event)
+            except queue.Full:
+                continue
+
+    def _send_sse(self, event: dict) -> None:
+        payload = json.dumps(event, ensure_ascii=False)
+        data = f"data: {payload}\n\n".encode("utf-8")
+        self.wfile.write(data)
+        self.wfile.flush()
+
+    def _send_sse_comment(self, comment: str) -> None:
+        data = f"{comment}\n\n".encode("utf-8")
+        self.wfile.write(data)
+        self.wfile.flush()
+
+    def _handle_cancel_scan(self) -> None:
+        """Solicita cancelamento do scan de duplicatas"""
+        global scan_progress, scan_results
+
+        with scan_lock:
+            if not scan_progress.get("is_scanning"):
+                self._send_json({"status": "idle"})
+                return
+            scan_progress["cancel_requested"] = True
+            scan_results = {"error": "cancelled"}
+
+        self._send_json({"status": "cancelling"})
     
     def _handle_cache_stats(self) -> None:
         """Retorna estatísticas dos caches"""
@@ -718,42 +810,57 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         rel_path = str(payload.get("path", "")).strip()
         if not rel_path:
-            self._send_json({"error": "invalid_params"}, status=400)
+            print("[ERROR] Caminho vazio recebido")
+            print(f"[DEBUG] Payload recebido: {payload}")
+            self._send_json({"error": "invalid_params", "received": payload}, status=400)
             return
 
         if not self.models_dir:
+            print("[ERROR] models_dir não configurado")
             self._send_json({"error": "models_dir_missing"}, status=404)
             return
 
-        # Construir e validar caminho
-        file_path = self.models_dir / rel_path
+        # Normalizar caminho (converter / para \ no Windows)
+        rel_path = rel_path.replace("/", os.sep).replace("\\", os.sep)
+        print(f"[DEBUG] Deletando arquivo: {rel_path}")
         
+        # Construir e validar caminho
         try:
-            file_path = file_path.resolve()
-            if not str(file_path).startswith(str(self.models_dir.resolve())):
-                self._send_json({"error": "invalid_path"}, status=400)
+            file_path = (self.models_dir / rel_path).resolve()
+            models_dir_resolved = self.models_dir.resolve()
+            
+            # Validar que o arquivo está dentro do models_dir
+            if not str(file_path).startswith(str(models_dir_resolved)):
+                print(f"[SECURITY] Tentativa de acesso fora do diretório: {file_path}")
+                self._send_json({"error": "invalid_path", "reason": "outside_models_dir"}, status=403)
                 return
-        except Exception:
-            self._send_json({"error": "invalid_path"}, status=400)
+        except Exception as e:
+            print(f"[ERROR] Erro ao resolver caminho: {e}")
+            self._send_json({"error": "invalid_path", "message": str(e)}, status=400)
             return
 
-        if not file_path.exists() or not file_path.is_file():
-            self._send_json({"error": "file_not_found"}, status=404)
+        if not file_path.exists():
+            print(f"[WARNING] Arquivo não encontrado: {file_path}")
+            self._send_json({"error": "file_not_found", "path": str(file_path)}, status=404)
+            return
+            
+        if not file_path.is_file():
+            print(f"[ERROR] Caminho não é um arquivo: {file_path}")
+            self._send_json({"error": "not_a_file"}, status=400)
             return
 
         try:
-            file_path.unlink()
-            print(f"[INFO] Arquivo deletado: {rel_path}")
+            # Delete com tratamento de permissões
+            file_path.unlink(missing_ok=False)
+            print(f"[INFO] ✅ Arquivo deletado: {rel_path}")
             
-            # Remover do cache de hashes
-            hash_cache = self._load_hash_cache()
-            if rel_path in hash_cache:
-                del hash_cache[rel_path]
-                self._save_hash_cache(hash_cache)
+            self._send_json({"status": "deleted", "path": rel_path, "message": "Arquivo removido com sucesso"})
             
-            self._send_json({"status": "deleted", "path": rel_path})
+        except PermissionError as e:
+            print(f"[ERROR] Sem permissão para deletar {file_path}: {e}")
+            self._send_json({"error": "permission_denied", "message": f"Sem permissão: {str(e)}"}, status=403)
         except Exception as e:
-            print(f"[ERROR] Erro ao deletar: {e}")
+            print(f"[ERROR] Erro ao deletar {file_path}: {e}")
             self._send_json({"error": "delete_failed", "message": str(e)}, status=500)
 
     def _load_hash_cache(self) -> dict:
@@ -791,6 +898,8 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         cached_data = cache[rel_path]
         if not isinstance(cached_data, dict) or "hash" not in cached_data:
             return None
+        if cached_data.get("algo") != "sha256":
+            return None
         
         try:
             stats = os.stat(file_path)
@@ -806,16 +915,31 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return None
     
     @staticmethod
-    def _calculate_md5_fast(file_path: str, block_size: int = 131072) -> str | None:
-        """Calcula MD5 com buffer otimizado (128KB)"""
-        md5 = hashlib.md5()
+    def _calculate_sha256_fast(file_path: str, block_size: int = 131072) -> str | None:
+        """Calcula SHA-256 com buffer otimizado (128KB)"""
+        sha256 = hashlib.sha256()
         try:
             with open(file_path, 'rb') as f:
                 for block in iter(lambda: f.read(block_size), b''):
-                    md5.update(block)
-            return md5.hexdigest()
+                    sha256.update(block)
+            return sha256.hexdigest()
         except Exception:
             return None
+
+    @staticmethod
+    def _files_are_identical(file_path_a: Path, file_path_b: Path, block_size: int = 131072) -> bool:
+        """Compara dois arquivos byte a byte para confirmar igualdade."""
+        try:
+            if file_path_a.stat().st_size != file_path_b.stat().st_size:
+                return False
+            with file_path_a.open('rb') as fa, file_path_b.open('rb') as fb:
+                for block_a in iter(lambda: fa.read(block_size), b''):
+                    block_b = fb.read(block_size)
+                    if block_a != block_b:
+                        return False
+            return True
+        except Exception:
+            return False
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         """Envia resposta JSON com compressão gzip se apropriado"""
@@ -839,14 +963,61 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_json_no_cache(self, data: dict, status: int = 200) -> None:
+        """Envia resposta JSON sem cache HTTP"""
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _send_file(self, file_path: Path) -> None:
         """Envia arquivo com cache HTTP e streaming"""
         try:
             fs = file_path.stat()
+            
+            # Determinar Content-Type baseado na extensão
+            ext = file_path.suffix.lower()
+            content_type = "application/octet-stream"
+            
+            # Mapa de tipos MIME para extensões
+            mime_types = {
+                # Vídeos
+                ".mp4": "video/mp4",
+                ".webm": "video/webm",
+                ".mov": "video/quicktime",
+                ".mkv": "video/x-matroska",
+                ".avi": "video/x-msvideo",
+                ".flv": "video/x-flv",
+                ".wmv": "video/x-ms-wmv",
+                ".m4v": "video/x-m4v",
+                # Imagens
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+                ".svg": "image/svg+xml",
+                # Áudio
+                ".mp3": "audio/mpeg",
+                ".wav": "audio/wav",
+                ".m4a": "audio/mp4",
+                ".aac": "audio/aac",
+            }
+            
+            if ext in mime_types:
+                content_type = mime_types[ext]
+            
             self.send_response(200)
             self.send_header("Content-Length", str(fs.st_size))
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "public, max-age=86400")  # 24h
+            # Suportar HTTP Range Requests para vídeos
+            self.send_header("Accept-Ranges", "bytes")
             self.end_headers()
             
             # Streaming em chunks de 64KB
@@ -948,13 +1119,7 @@ def run_server(port: int, directory: Path, models_dir: Path) -> None:
     )
     with socketserver.ThreadingTCPServer(("", port), handler) as httpd:
         httpd.daemon_threads = True  # Threads daemon para melhor cleanup
-        print(f"╔═══════════════════════════════════════════════════╗")
-        print(f"║  Catalog Server - Otimizado                       ║")
-        print(f"╠═══════════════════════════════════════════════════╣")
-        print(f"║  URL: http://localhost:{port:<30} ║")
-        print(f"║  Models Dir: {str(models_dir)[:36]:<36}║")
-        print(f"╚═══════════════════════════════════════════════════╝")
-        print(f"\n[INFO] Servidor rodando. Pressione Ctrl+C para parar.\n")
+        print(f"URL: http://localhost:{port:<30}")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

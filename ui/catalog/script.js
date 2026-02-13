@@ -57,27 +57,31 @@ fetch("api/sites")
 
 // Funções para verificação de duplicatas
 let progressInterval = null;
+let scanStartAttempted = false;
+let shouldPollProgress = false;
 
 function scanDuplicates() {
   const modal = document.getElementById("duplicatesModal");
   const body = document.getElementById("duplicatesBody");
-  
+
   modal.style.display = "flex";
   body.innerHTML = '<div class="loading">🔍 Verificando arquivos...<br><div id="progressText" class="progress-text">Iniciando...</div></div>';
-  
-  // Iniciar o scan
-  fetch("/api/scan_duplicates")
+
+  scanStartAttempted = false;
+  shouldPollProgress = true;
+  startProgressPolling(body);
+
+  fetch("/api/scan_duplicates", { cache: "no-store" })
     .then(res => res.json())
     .then(data => {
       console.log("Scan started:", data); // Debug
       if (data.error) {
+        if (data.error === "scan_in_progress") {
+          return;
+        }
         stopProgressPolling();
         body.innerHTML = `<div class="error">❌ Erro: ${data.error}</div>`;
-        return;
       }
-      
-      // Scan iniciado, começar polling
-      startProgressPolling(body);
     })
     .catch(err => {
       stopProgressPolling();
@@ -87,33 +91,64 @@ function scanDuplicates() {
 }
 
 function startProgressPolling(body) {
+  if (!shouldPollProgress || progressInterval) {
+    return;
+  }
   progressInterval = setInterval(() => {
-    fetch("/api/scan_progress")
+    const modal = document.getElementById("duplicatesModal");
+    const isHidden = !modal || window.getComputedStyle(modal).display === "none";
+    if (isHidden) {
+      stopProgressPolling();
+      return;
+    }
+    fetch("/api/scan_progress", { cache: "no-store" })
       .then(res => res.json())
       .then(data => {
         console.log("Progress data:", data); // Debug
-        
-        // Sempre buscar a referência atualizada do elemento
+
         const bodyElement = document.getElementById("duplicatesBody");
-        const progressText = document.getElementById("progressText");
-        
+        let progressText = document.getElementById("progressText");
+
         if (!bodyElement) {
           console.error("duplicatesBody element not found!");
           stopProgressPolling();
           return;
         }
-        
-        // Atualizar progresso se ainda está escaneando
+
+        if (!progressText) {
+          const loading = bodyElement.querySelector(".loading") || bodyElement;
+          progressText = document.createElement("div");
+          progressText.id = "progressText";
+          progressText.className = "progress-text";
+          progressText.textContent = "Iniciando...";
+          loading.appendChild(progressText);
+        }
+
         if (progressText) {
-          if (data.is_scanning) {
+          if (data.completed) {
+            progressText.innerHTML = "Finalizando...";
+          } else if (data.total > 0 || data.current > 0) {
             const percent = data.total > 0 ? Math.round((data.current / data.total) * 100) : 0;
             progressText.innerHTML = `${data.current} / ${data.total} arquivos (${percent}%)`;
-          } else if (data.completed) {
-            progressText.innerHTML = 'Finalizando...';
+          } else if (data.is_scanning) {
+            progressText.innerHTML = "Coletando arquivos...";
+          } else {
+            progressText.innerHTML = "Iniciando...";
+            if (!scanStartAttempted) {
+              scanStartAttempted = true;
+              fetch("/api/scan_duplicates", { cache: "no-store" })
+                .then(res => res.json())
+                .then(result => {
+                  if (result.error && result.error !== "scan_in_progress") {
+                    stopProgressPolling();
+                    bodyElement.innerHTML = `<div class="error">❌ Erro: ${result.error}</div>`;
+                  }
+                })
+                .catch(() => {});
+            }
           }
         }
-        
-        // Se o scan terminou, exibir resultados
+
         if (data.completed && data.results) {
           console.log("Scan completed, displaying results..."); // Debug
           stopProgressPolling();
@@ -124,8 +159,20 @@ function startProgressPolling(body) {
         console.error("Erro ao obter progresso:", err);
         stopProgressPolling();
       });
-  }, 500); // Atualiza a cada 500ms
+  }, 500);
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopProgressPolling();
+    return;
+  }
+  const modal = document.getElementById("duplicatesModal");
+  const isVisible = modal && window.getComputedStyle(modal).display !== "none";
+  if (isVisible && shouldPollProgress) {
+    startProgressPolling(document.getElementById("duplicatesBody"));
+  }
+});
 
 function stopProgressPolling() {
   if (progressInterval) {
@@ -150,6 +197,7 @@ function displayDuplicates(data) {
   }
   
   const totalFiles = data.total_files || 0;
+  const hashedFiles = data.hashed_files || 0;
   const groupCount = data.duplicate_groups || 0;
   const totalWaste = data.total_waste_bytes || 0;
   const duplicates = data.duplicates || [];
@@ -161,6 +209,10 @@ function displayDuplicates(data) {
       <div class="summary-item">
         <div class="summary-label">📁 Arquivos Verificados</div>
         <div class="summary-value">${totalFiles}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">#️⃣ Arquivos Hasheados</div>
+        <div class="summary-value">${hashedFiles}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">🔄 Grupos de Duplicatas</div>
@@ -214,7 +266,7 @@ function displayDuplicates(data) {
                 <div class="file-item" id="${fileId}" data-file-path="${f}">
                   <div class="file-thumbnail">
                     ${isVideo ? 
-                      `<video src="${mediaUrl}" class="dup-thumb"></video>` :
+                      `<video src="${mediaUrl}" class="dup-thumb" controls preload="metadata"></video>` :
                       `<img src="${mediaUrl}" class="dup-thumb" loading="lazy">`
                     }
                   </div>
@@ -329,6 +381,14 @@ function formatBytes(bytes) {
 
 function closeDuplicatesModal() {
   document.getElementById("duplicatesModal").style.display = "none";
+  shouldPollProgress = false;
+  stopProgressPolling();
+  cancelDuplicateScan();
+}
+
+function cancelDuplicateScan() {
+  fetch("/api/cancel_scan", { method: "POST" })
+    .catch(() => {});
 }
 
 // Deletar arquivo duplicado individual
@@ -462,45 +522,6 @@ function keepOnlyOne(groupId, files, btn) {
       showToast(`❌ Falha ao deletar arquivos: ${failedCount} falha${failedCount > 1 ? 's' : ''}`, "error");
     }
   });
-}
-
-// Limpar cache de hashes
-let clearCacheConfirm = false;
-function clearCache() {
-  const btn = event.target;
-  
-  if (!clearCacheConfirm) {
-    btn.textContent = '✓ Confirmar limpeza?';
-    btn.style.background = '#ff6b6b';
-    clearCacheConfirm = true;
-    
-    setTimeout(() => {
-      if (clearCacheConfirm) {
-        btn.textContent = '🗑️ Limpar Cache';
-        btn.style.background = '';
-        clearCacheConfirm = false;
-      }
-    }, 3000);
-    return;
-  }
-  
-  btn.disabled = true;
-  btn.textContent = '⏳ Limpando...';
-  clearCacheConfirm = false;
-  
-  fetch("api/clear_cache")
-    .then(res => res.json())
-    .then(data => {
-      if (data.status === "cleared" || data.status === "empty") {
-        showToast(`✅ ${data.message}`, "success");
-      } else {
-        showToast(`❌ Erro: ${data.error || data.message}`, "error");
-      }
-    })
-    .catch(err => {
-      console.error("Erro:", err);
-      showToast("❌ Erro ao limpar cache", "error");
-    });
 }
 
 // Fechar modal ao clicar fora

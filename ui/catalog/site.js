@@ -73,20 +73,14 @@ fetch(`api/models?site=${encodeURIComponent(site)}`)
       if (deleteBtn) {
         deleteBtn.addEventListener("click", (event) => {
           event.stopPropagation();
-          const confirmed = window.confirm(`Excluir a modelo "${modelName}"?`);
-          if (!confirmed) return;
-          fetch("/api/delete_model", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ site, model: model.name || "" }),
-          })
-            .then(res => res.json())
-            .then(result => {
-              if (result && result.status === "deleted") {
-                card.remove();
-              }
-            })
-            .catch(() => {});
+          
+          // Usar DeleteManager para gerenciar a exclusão
+          const deleteManager = DeleteManager.createModelDelete(
+            site,
+            modelName,
+            card
+          );
+          deleteManager.execute();
         });
       }
 
