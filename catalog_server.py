@@ -1,7 +1,6 @@
 import argparse
 import functools
 import gzip
-import hashlib
 import http.server
 import json
 import os
@@ -10,7 +9,6 @@ import shutil
 import socketserver
 import threading
 import time
-from collections import defaultdict
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from typing import Optional, Tuple, Dict, List, Any
@@ -31,7 +29,6 @@ else:
 CACHE_TTL = 1800  # 30 minutos
 CACHE_CLEANUP_INTERVAL = 300  # 5 minutos
 MAX_CACHE_SIZE = 1000  # Máximo de entradas no cache
-SCAN_CHUNK_SIZE = 500  # Processar arquivos em chunks durante scan
 
 # Caches globais com estrutura melhorada
 @dataclass
@@ -110,11 +107,6 @@ models_cache = CacheManager(max_size=500, ttl=CACHE_TTL)
 model_info_cache = CacheManager(max_size=2000, ttl=CACHE_TTL)
 media_list_cache = CacheManager(max_size=1000, ttl=CACHE_TTL)
 
-# Estado de scan de duplicatas
-scan_progress = {"current": 0, "total": 0, "is_scanning": False}
-scan_results = None
-scan_lock = threading.Lock()
-HASH_CACHE_FILE = "duplicates_cache.json"
 
 
 class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -132,12 +124,6 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/model":
             self._handle_model(parsed.query)
-            return
-        if parsed.path == "/api/scan_duplicates":
-            self._handle_scan_duplicates()
-            return
-        if parsed.path == "/api/scan_progress":
-            self._handle_scan_progress()
             return
         if parsed.path == "/api/clear_cache":
             self._handle_clear_cache()
@@ -160,9 +146,6 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/delete_file":
             self._handle_delete_file()
-            return
-        if parsed.path == "/api/delete_duplicate":
-            self._handle_delete_duplicate()
             return
         self.send_error(404, "Not found")
 
@@ -484,201 +467,10 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         self._send_json({"status": "deleted"})
 
-    def _handle_scan_duplicates(self) -> None:
-        """Inicia verificação de duplicatas em thread separada com processamento otimizado"""
-        global scan_progress, scan_results
-        
-        if not self.models_dir or not self.models_dir.exists():
-            self._send_json({"error": "models_dir_missing"}, status=404)
-            return
-        
-        # Se já está executando, retornar erro
-        with scan_lock:
-            if scan_progress["is_scanning"]:
-                self._send_json({"error": "scan_in_progress"}, status=409)
-                return
-        
-        # Iniciar scan em thread separada
-        scan_thread = threading.Thread(
-            target=self._run_scan_duplicates_optimized,
-            daemon=True
-        )
-        scan_thread.start()
-        
-        # Retornar resposta imediata
-        self._send_json({"status": "started", "message": "Scan iniciado com processamento otimizado"})
-    
-    def _run_scan_duplicates_optimized(self) -> None:
-        """Executa scan de duplicatas otimizado com processamento em chunks"""
-        global scan_progress, scan_results
-        
-        print("[INFO] Iniciando scan de duplicatas otimizado...")
-        
-        if not self.models_dir:
-            print("[ERROR] models_dir não está definido")
-            return
-        
-        valid_extensions = {
-            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp',
-            '.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.m4v'
-        }
-
-        # Carregar cache existente
-        hash_cache = self._load_hash_cache()
-        cache_hits = 0
-        cache_misses = 0
-
-        with scan_lock:
-            scan_progress["is_scanning"] = True
-            scan_progress["current"] = 0
-            scan_progress["total"] = 0
-            scan_results = None
-        
-        # Coletar lista de arquivos primeiro (mais rápido)
-        print("[INFO] Coletando lista de arquivos...")
-        files_to_process = []
-        
-        for root, _, files in os.walk(self.models_dir):
-            for filename in files:
-                file_extension = os.path.splitext(filename)[1].lower()
-                if file_extension in valid_extensions:
-                    file_path = os.path.join(root, filename)
-                    rel_path = os.path.relpath(file_path, self.models_dir)
-                    files_to_process.append((file_path, rel_path))
-        
-        total_files = len(files_to_process)
-        with scan_lock:
-            scan_progress["total"] = total_files
-        
-        print(f"[INFO] Total de arquivos a processar: {total_files}")
-        
-        # Processar em chunks para melhor performance
-        hashes = defaultdict(list)
-        new_cache = {}
-        files_checked = 0
-        chunk_size = SCAN_CHUNK_SIZE
-        
-        for i in range(0, total_files, chunk_size):
-            chunk = files_to_process[i:i + chunk_size]
-            
-            for file_path, rel_path in chunk:
-                # Verificar cache primeiro
-                file_hash = self._get_cached_hash(file_path, rel_path, hash_cache)
-                
-                if file_hash and rel_path in hash_cache:
-                    # Cache hit
-                    cache_hits += 1
-                    new_cache[rel_path] = hash_cache[rel_path]
-                else:
-                    # Cache miss - calcular hash
-                    file_hash = self._calculate_md5_fast(file_path)
-                    cache_misses += 1
-                    
-                    if file_hash:
-                        try:
-                            stats = os.stat(file_path)
-                            new_cache[rel_path] = {
-                                "hash": file_hash,
-                                "size": stats.st_size,
-                                "mtime": stats.st_mtime
-                            }
-                        except Exception:
-                            pass
-                
-                if file_hash:
-                    hashes[file_hash].append(rel_path)
-                    files_checked += 1
-                    
-                    with scan_lock:
-                        scan_progress["current"] = files_checked
-            
-            # Log a cada chunk processado
-            if (i // chunk_size + 1) % 5 == 0:
-                print(f"[INFO] Progresso: {files_checked}/{total_files} arquivos ({(files_checked/total_files*100):.1f}%)")
-
-        # Identificar duplicatas
-        duplicates = {k: v for k, v in hashes.items() if len(v) > 1}
-        
-        duplicate_groups = []
-        total_size_waste = 0
-        
-        for file_hash, file_list in duplicates.items():
-            first_file = self.models_dir / file_list[0]
-            if first_file.exists():
-                file_size = first_file.stat().st_size
-                waste = file_size * (len(file_list) - 1)
-                total_size_waste += waste
-            else:
-                file_size = 0
-                waste = 0
-            
-            duplicate_groups.append({
-                "hash": file_hash,
-                "count": len(file_list),
-                "files": file_list,
-                "size": file_size,
-                "waste": waste
-            })
-        
-        # Ordenar por desperdício (maior primeiro)
-        duplicate_groups.sort(key=lambda x: x["waste"], reverse=True)
-        
-        with scan_lock:
-            scan_progress["is_scanning"] = False
-        
-        print(f"[INFO] Scan finalizado!")
-        print(f"  - Arquivos processados: {files_checked}")
-        print(f"  - Grupos duplicados: {len(duplicates)}")
-        print(f"  - Espaço desperdiçado: {self._format_bytes(total_size_waste)}")
-        print(f"  - Taxa de cache hit: {(cache_hits/(cache_hits+cache_misses)*100):.1f}%" if (cache_hits+cache_misses) > 0 else "N/A")
-        
-        # Salvar cache atualizado
-        self._save_hash_cache(new_cache)
-        
-        # Armazenar resultados
-        scan_results = {
-            "total_files": files_checked,
-            "duplicate_groups": len(duplicates),
-            "total_waste_bytes": total_size_waste,
-            "duplicates": duplicate_groups,
-            "cache_stats": {
-                "hits": cache_hits,
-                "misses": cache_misses,
-                "hit_rate": round((cache_hits / (cache_hits + cache_misses) * 100) if (cache_hits + cache_misses) > 0 else 0, 1)
-            }
-        }
-
-    def _handle_scan_progress(self) -> None:
-        """Retorna o progresso atual do scan"""
-        global scan_progress, scan_results
-        
-        with scan_lock:
-            response = dict(scan_progress)
-            
-            if not scan_progress["is_scanning"] and scan_results is not None:
-                response["completed"] = True
-                response["results"] = scan_results
-            else:
-                response["completed"] = False
-        
-        self._send_json(response)
-    
     def _handle_clear_cache(self) -> None:
-        """Limpa todos os caches (hash e memória)"""
+        """Limpa todos os caches em memória"""
         if not self.models_dir:
             self._send_json({"error": "models_dir_missing"}, status=404)
-            return
-        
-        # Limpar cache de hash em disco
-        cache_file = self.models_dir / HASH_CACHE_FILE
-        hash_cleared = False
-        
-        try:
-            if cache_file.exists():
-                cache_file.unlink()
-                hash_cleared = True
-        except Exception as e:
-            self._send_json({"error": "clear_failed", "message": str(e)}, status=500)
             return
         
         # Limpar caches em memória
@@ -688,9 +480,8 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         
         self._send_json({
             "status": "cleared",
-            "hash_cache": "cleared" if hash_cleared else "empty",
             "memory_caches": "cleared",
-            "message": "Todos os caches foram limpos com sucesso"
+            "message": "Todos os caches em memoria foram limpos com sucesso"
         })
     
     def _handle_cache_stats(self) -> None:
@@ -702,117 +493,6 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         }
         self._send_json(stats)
     
-    def _handle_delete_duplicate(self) -> None:
-        """Deleta um arquivo duplicado"""
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length) if length > 0 else b"{}"
-            payload = json.loads(raw.decode("utf-8"))
-        except Exception as e:
-            print(f"[ERROR] Erro ao parsear JSON: {e}")
-            self._send_json({"error": "invalid_json"}, status=400)
-            return
-
-        rel_path = str(payload.get("path", "")).strip()
-        if not rel_path:
-            self._send_json({"error": "invalid_params"}, status=400)
-            return
-
-        if not self.models_dir:
-            self._send_json({"error": "models_dir_missing"}, status=404)
-            return
-
-        # Construir e validar caminho
-        file_path = self.models_dir / rel_path
-        
-        try:
-            file_path = file_path.resolve()
-            if not str(file_path).startswith(str(self.models_dir.resolve())):
-                self._send_json({"error": "invalid_path"}, status=400)
-                return
-        except Exception:
-            self._send_json({"error": "invalid_path"}, status=400)
-            return
-
-        if not file_path.exists() or not file_path.is_file():
-            self._send_json({"error": "file_not_found"}, status=404)
-            return
-
-        try:
-            file_path.unlink()
-            print(f"[INFO] Arquivo deletado: {rel_path}")
-            
-            # Remover do cache de hashes
-            hash_cache = self._load_hash_cache()
-            if rel_path in hash_cache:
-                del hash_cache[rel_path]
-                self._save_hash_cache(hash_cache)
-            
-            self._send_json({"status": "deleted", "path": rel_path})
-        except Exception as e:
-            print(f"[ERROR] Erro ao deletar: {e}")
-            self._send_json({"error": "delete_failed", "message": str(e)}, status=500)
-
-    def _load_hash_cache(self) -> dict:
-        """Carrega cache de hashes do disco"""
-        if not self.models_dir:
-            return {}
-        
-        cache_file = self.models_dir / HASH_CACHE_FILE
-        if not cache_file.exists():
-            return {}
-        
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    
-    def _save_hash_cache(self, cache: dict) -> None:
-        """Salva cache de hashes no disco"""
-        if not self.models_dir:
-            return
-        
-        cache_file = self.models_dir / HASH_CACHE_FILE
-        try:
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(cache, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"[ERROR] Erro ao salvar cache: {e}")
-    
-    def _get_cached_hash(self, file_path: str, rel_path: str, cache: dict) -> str | None:
-        """Obtém hash do cache se válido"""
-        if rel_path not in cache:
-            return None
-        
-        cached_data = cache[rel_path]
-        if not isinstance(cached_data, dict) or "hash" not in cached_data:
-            return None
-        
-        try:
-            stats = os.stat(file_path)
-            cached_size = cached_data.get("size")
-            cached_mtime = cached_data.get("mtime")
-            
-            # Validar se arquivo não mudou
-            if cached_size != stats.st_size or cached_mtime != stats.st_mtime:
-                return None
-            
-            return cached_data["hash"]
-        except Exception:
-            return None
-    
-    @staticmethod
-    def _calculate_md5_fast(file_path: str, block_size: int = 131072) -> str | None:
-        """Calcula MD5 com buffer otimizado (128KB)"""
-        md5 = hashlib.md5()
-        try:
-            with open(file_path, 'rb') as f:
-                for block in iter(lambda: f.read(block_size), b''):
-                    md5.update(block)
-            return md5.hexdigest()
-        except Exception:
-            return None
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         """Envia resposta JSON com compressão gzip se apropriado"""

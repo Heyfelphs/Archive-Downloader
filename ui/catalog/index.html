@@ -10,26 +10,12 @@
 
 <div class="nav-bar">
   <div class="nav-title">📁 Catálogo de Sites</div>
-  <button class="nav-btn" onclick="scanDuplicates()">🔍 Verificar Duplicatas</button>
   <button class="nav-btn nav-btn-secondary" onclick="clearCache()">🗑️ Limpar Cache</button>
   <button class="nav-btn" onclick="history.back()">⬅ Voltar</button>
   <button class="nav-btn" onclick="window.location.href='index.html'">🏠 Início</button>
 </div>
 
 <div id="catalog" class="grid"></div>
-
-<!-- Modal de Duplicatas -->
-<div id="duplicatesModal" class="modal">
-  <div class="modal-content">
-    <div class="modal-header">
-      <h2>🔍 Verificação de Duplicatas</h2>
-      <button class="modal-close" onclick="closeDuplicatesModal()">✖</button>
-    </div>
-    <div id="duplicatesBody" class="modal-body">
-      <div class="loading">Verificando arquivos...</div>
-    </div>
-  </div>
-</div>
 
 <!-- Toast de notificação -->
 <div id="toast" class="toast"></div>
