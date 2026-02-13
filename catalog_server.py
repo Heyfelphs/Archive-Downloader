@@ -124,9 +124,6 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/model":
             self._handle_model(parsed.query)
             return
-        if parsed.path == "/api/clear_cache":
-            self._handle_clear_cache()
-            return
         if parsed.path == "/api/cache_stats":
             self._handle_cache_stats()
             return
@@ -466,23 +463,6 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         self._send_json({"status": "deleted"})
 
-    def _handle_clear_cache(self) -> None:
-        """Limpa todos os caches em memória"""
-        if not self.models_dir:
-            self._send_json({"error": "models_dir_missing"}, status=404)
-            return
-        
-        # Limpar caches em memória
-        models_cache.clear()
-        model_info_cache.clear()
-        media_list_cache.clear()
-        
-        self._send_json({
-            "status": "cleared",
-            "memory_caches": "cleared",
-            "message": "Todos os caches em memoria foram limpos com sucesso"
-        })
-    
     def _handle_cache_stats(self) -> None:
         """Retorna estatísticas dos caches"""
         stats = {
