@@ -658,8 +658,11 @@ class CatalogRequestHandler(http.server.SimpleHTTPRequestHandler):
             if not scan_progress["is_scanning"] and scan_results is not None:
                 response["completed"] = True
                 response["results"] = scan_results
+                print(f"[DEBUG] Sending completed results: {len(scan_results.get('duplicates', []))} groups")
             else:
                 response["completed"] = False
+                if scan_progress["is_scanning"]:
+                    print(f"[DEBUG] Scanning in progress: {scan_progress['current']}/{scan_progress['total']}")
         
         self._send_json(response)
     

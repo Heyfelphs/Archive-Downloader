@@ -46,3 +46,64 @@ HEADERS_FOR_REQUESTS = {
 }
 
 PICAZOR_CHECK_BATCH_DEFAULT = 30
+
+# Thread and Download Configuration
+FIXED_PICAZOR_THREADS = 4
+FIXED_PICAZOR_DELAY = 0.1
+FIXED_FAPELLO_THREADS = 3
+FIXED_DOWNLOAD_CHUNK_SIZE = 256 * 1024  # 256 KB
+
+# Site Detection
+from enum import Enum
+from typing import NamedTuple
+
+class SiteType(Enum):
+    """Enum para tipos de sites suportados"""
+    FAPELLO = "fapello"
+    PICAZOR = "picazor"
+    LEAKGALLERY = "leakgallery"
+    FAPFOLDER = "fapfolder"
+    UNKNOWN = "unknown"
+
+class SiteConfig(NamedTuple):
+    """Configuração de site"""
+    site_type: SiteType
+    label: str
+    domain: str
+
+SITE_CONFIGS = {
+    SiteType.PICAZOR: SiteConfig(SiteType.PICAZOR, "Picazor", "picazor.com"),
+    SiteType.FAPELLO: SiteConfig(SiteType.FAPELLO, "Fapello", "fapello.com"),
+    SiteType.LEAKGALLERY: SiteConfig(SiteType.LEAKGALLERY, "Leakgallery", "leakgallery.com"),
+    SiteType.FAPFOLDER: SiteConfig(SiteType.FAPFOLDER, "Fapfolder", "fapfolder.club"),
+}
+
+def detect_site_type(url: str) -> SiteType:
+    """Detecta o tipo de site de uma URL"""
+    url_lower = url.lower()
+    for site_type, config in SITE_CONFIGS.items():
+        if config.domain in url_lower:
+            return site_type
+    return SiteType.UNKNOWN
+
+def get_site_label(url: str) -> str:
+    """Retorna o label do site baseado na URL"""
+    site_type = detect_site_type(url)
+    if site_type in SITE_CONFIGS:
+        return SITE_CONFIGS[site_type].label
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    return parsed.netloc or "Site"
+
+def should_continue_worker(worker) -> bool:
+    """Verifica se worker deve continuar (não foi parado)"""
+    return not (worker and getattr(worker, "stop_requested", False))
+
+def wait_if_paused(worker) -> bool:
+    """Aguarda se worker está pausado, retorna False se foi parado"""
+    import time
+    while worker and getattr(worker, "is_paused", False):
+        if not should_continue_worker(worker):
+            return False
+        time.sleep(0.1)
+    return should_continue_worker(worker)

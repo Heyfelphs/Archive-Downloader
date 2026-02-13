@@ -7,6 +7,9 @@ import cloudscraper
 import threading
 import time
 
+# Regex compilado para verificação de mídia (otimização)
+_UPLOADS_PATTERN = compile(r"uploads")
+
 
 class PicazorClient:
     def _fetch_url_with_retries(self, url: str, scraper=None):
@@ -211,7 +214,7 @@ class PicazorClient:
     # Verifica se a página contém mídia válida
     # ---------------------------------------------------------
     def _has_media(self, soup: BeautifulSoup) -> bool:
-        if soup.find("img", src=compile(r"uploads")):
+        if soup.find("img", src=_UPLOADS_PATTERN):
             return True
 
         if soup.find("video"):

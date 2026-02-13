@@ -1,6 +1,7 @@
 # utils/network.py
 
 import os
+import time
 from requests import Session
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -11,6 +12,12 @@ from config import HEADERS_FOR_REQUESTS
 
 DEFAULT_TIMEOUT = (10, 60)
 _THREAD_LOCAL = threading.local()
+
+# Tamanhos de chunk dinâmicos baseados na velocidade de download
+MIN_CHUNK_SIZE = 64 * 1024     # 64KB para conexões muito lentas
+MAX_CHUNK_SIZE = 2 * 1024 * 1024  # 2MB para conexões rápidas
+SPEED_THRESHOLD_FAST = 1 * 1024 * 1024  # > 1MB/s = rápido
+SPEED_THRESHOLD_SLOW = 100 * 1024       # < 100KB/s = lento
 
 
 def _get_session() -> Session:
@@ -114,15 +121,48 @@ def download_binary_to_file(
     total_bytes = int(total_length) if total_length and total_length.isdigit() else None
     bytes_downloaded = 0
     temp_path = f"{path}.part"
+    
+    # Variáveis para chunk dinâmico
+    current_chunk_size = chunk_size
+    start_time = time.time()
+    last_adjustment_time = start_time
+    adjustment_interval = 2.0  # Ajusta a cada 2 segundos
+    
     try:
         with open(temp_path, "wb") as handle:
-            for chunk in response.iter_content(chunk_size=chunk_size):
+            for chunk in response.iter_content(chunk_size=current_chunk_size):
                 if not chunk:
                     continue
                 handle.write(chunk)
                 bytes_downloaded += len(chunk)
+                
+                # Ajustar chunk_size dinamicamente baseado na velocidade
+                current_time = time.time()
+                elapsed_since_adjustment = current_time - last_adjustment_time
+                
+                if elapsed_since_adjustment >= adjustment_interval and bytes_downloaded > 0:
+                    elapsed_total = current_time - start_time
+                    download_speed = bytes_downloaded / elapsed_total if elapsed_total > 0 else 0
+                    
+                    # Ajustar chunk size baseado na velocidade
+                    if download_speed > SPEED_THRESHOLD_FAST:
+                        # Conexão rápida: aumentar chunk para 2MB
+                        current_chunk_size = MAX_CHUNK_SIZE
+                    elif download_speed < SPEED_THRESHOLD_SLOW:
+                        # Conexão lenta: diminuir chunk para 64KB
+                        current_chunk_size = MIN_CHUNK_SIZE
+                    else:
+                        # Velocidade média: usar chunk padrão ou ajustar proporcionalmente
+                        # Interpolação linear entre MIN e chunk_size original
+                        ratio = (download_speed - SPEED_THRESHOLD_SLOW) / (SPEED_THRESHOLD_FAST - SPEED_THRESHOLD_SLOW)
+                        current_chunk_size = int(MIN_CHUNK_SIZE + (chunk_size - MIN_CHUNK_SIZE) * ratio)
+                        current_chunk_size = max(MIN_CHUNK_SIZE, min(current_chunk_size, MAX_CHUNK_SIZE))
+                    
+                    last_adjustment_time = current_time
+                
                 if progress_callback:
                     progress_callback(bytes_downloaded, total_bytes)
+                    
         if total_bytes is not None and bytes_downloaded < total_bytes:
             raise ValueError("Download incompleto (tamanho menor que o esperado)")
         if bytes_downloaded == 0:

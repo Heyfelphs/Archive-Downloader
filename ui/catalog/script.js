@@ -92,7 +92,16 @@ function startProgressPolling(body) {
       .then(res => res.json())
       .then(data => {
         console.log("Progress data:", data); // Debug
+        
+        // Sempre buscar a referência atualizada do elemento
+        const bodyElement = document.getElementById("duplicatesBody");
         const progressText = document.getElementById("progressText");
+        
+        if (!bodyElement) {
+          console.error("duplicatesBody element not found!");
+          stopProgressPolling();
+          return;
+        }
         
         // Atualizar progresso se ainda está escaneando
         if (progressText) {
@@ -106,11 +115,15 @@ function startProgressPolling(body) {
         
         // Se o scan terminou, exibir resultados
         if (data.completed && data.results) {
+          console.log("Scan completed, displaying results..."); // Debug
           stopProgressPolling();
           displayDuplicates(data.results);
         }
       })
-      .catch(err => console.error("Erro ao obter progresso:", err));
+      .catch(err => {
+        console.error("Erro ao obter progresso:", err);
+        stopProgressPolling();
+      });
   }, 500); // Atualiza a cada 500ms
 }
 
@@ -122,7 +135,14 @@ function stopProgressPolling() {
 }
 
 function displayDuplicates(data) {
+  console.log("displayDuplicates called with data:", data); // Debug
+  
   const body = document.getElementById("duplicatesBody");
+  
+  if (!body) {
+    console.error("duplicatesBody element not found in displayDuplicates!");
+    return;
+  }
   
   if (data.error) {
     body.innerHTML = `<div class="error">❌ Erro: ${data.error}</div>`;
@@ -133,6 +153,8 @@ function displayDuplicates(data) {
   const groupCount = data.duplicate_groups || 0;
   const totalWaste = data.total_waste_bytes || 0;
   const duplicates = data.duplicates || [];
+  
+  console.log(`Displaying results: ${totalFiles} files, ${groupCount} groups, ${duplicates.length} duplicate groups`); // Debug
   
   let html = `
     <div class="duplicates-summary">
@@ -293,6 +315,8 @@ function displayDuplicates(data) {
       }
     });
   });
+  
+  console.log("displayDuplicates completed, HTML updated successfully!"); // Debug
 }
 
 function formatBytes(bytes) {

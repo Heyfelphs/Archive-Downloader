@@ -6,6 +6,8 @@ from PySide6.QtGui import QIcon, QPixmap, QColor, QPainter, QImage, QFont
 
 from config import (
     PICAZOR_CHECK_BATCH_DEFAULT,
+    SiteType,
+    detect_site_type,
 )
 
 FIXED_PICAZOR_THREADS = 4
@@ -16,7 +18,28 @@ from core.fapello_client import get_total_files as get_fapello_total_files
 from core.services.download_service import download_orchestrator_with_progress
 
 
-class FetchWorker(QThread):
+class BaseWorkerThread(QThread):
+    """Classe base para workers que suportam pause/stop/resume."""
+
+    def __init__(self):
+        super().__init__()
+        self.stop_requested = False
+        self.is_paused = False
+
+    def pause(self):
+        """Pausa a execução do worker."""
+        self.is_paused = True
+
+    def resume(self):
+        """Resume a execução do worker."""
+        self.is_paused = False
+
+    def stop(self):
+        """Para a execução do worker."""
+        self.stop_requested = True
+
+
+class FetchWorker(BaseWorkerThread):
     """Worker thread para buscar informacoes sem bloquear a UI."""
 
     finished = Signal(dict)
@@ -30,8 +53,6 @@ class FetchWorker(QThread):
         self.picazor_batch = picazor_batch
         self.picazor_delay = picazor_delay
         self.fapfolder_cookie = fapfolder_cookie
-        self.stop_requested = False
-        self.is_paused = False
         self._pause_event = threading.Event()
         self._pause_event.set()
 
@@ -48,7 +69,15 @@ class FetchWorker(QThread):
                 self.error.emit("URL vazia!")
                 return
 
-            if "picazor.com" in self.url:
+            site_type = detect_site_type(self.url)
+            
+            # Progress wrapper comum para todos os sites
+            def progress_wrapper(count: int):
+                if not self._wait_if_paused():
+                    return
+                self.progress.emit(count)
+
+            if site_type == SiteType.PICAZOR:
                 print("[FetchWorker] Detected Picazor link. Starting analysis...")
                 from core.picazor_client import PicazorClient
 
@@ -56,11 +85,6 @@ class FetchWorker(QThread):
                 if self.stop_requested:
                     self.error.emit("Analise cancelada")
                     return
-
-                def progress_wrapper(count: int):
-                    if not self._wait_if_paused():
-                        return
-                    self.progress.emit(count)
 
                 valid_indices = client.get_valid_indices_multithread(
                     self.url,
@@ -70,7 +94,8 @@ class FetchWorker(QThread):
                 )
                 total_files = len(valid_indices)
                 print(f"[FetchWorker] Media found: {total_files} files")
-            elif "leakgallery.com" in self.url:
+                
+            elif site_type == SiteType.LEAKGALLERY:
                 print("[FetchWorker] Detected Leakgallery link. Starting analysis...")
                 from core.leakgallery_client import LeakgalleryClient
 
@@ -79,17 +104,13 @@ class FetchWorker(QThread):
                     self.error.emit("Analise cancelada")
                     return
 
-                def progress_wrapper(count: int):
-                    if not self._wait_if_paused():
-                        return
-                    self.progress.emit(count)
-
                 parts = [p for p in self.url.split("/") if p]
                 model = parts[-1] if parts else ""
                 valid_indices = client.get_media_ids(model, progress_callback=progress_wrapper)
                 total_files = len(valid_indices)
                 print(f"[FetchWorker] Media found: {total_files} files")
-            elif "fapfolder.club" in self.url:
+                
+            elif site_type == SiteType.FAPFOLDER:
                 print("[FetchWorker] Detected Fapfolder link. Starting analysis...")
                 from core.fapfolder_client import FapfolderClient
 
@@ -97,11 +118,6 @@ class FetchWorker(QThread):
                 if self.stop_requested:
                     self.error.emit("Analise cancelada")
                     return
-
-                def progress_wrapper(count: int):
-                    if not self._wait_if_paused():
-                        return
-                    self.progress.emit(count)
 
                 parts = [p for p in self.url.split("/") if p]
                 model = parts[-1] if parts else ""
@@ -127,15 +143,18 @@ class FetchWorker(QThread):
                 self.error.emit(f"Erro ao buscar: {str(exc)}")
 
     def stop(self):
-        self.stop_requested = True
+        """Para a execução e libera o pause event."""
+        super().stop()
         self._pause_event.set()
 
     def pause(self):
-        self.is_paused = True
+        """Pausa a execução bloqueando o pause event."""
+        super().pause()
         self._pause_event.clear()
 
     def resume(self):
-        self.is_paused = False
+        """Resume a execução liberando o pause event."""
+        super().resume()
         self._pause_event.set()
 class ThumbnailWorker(QThread):
     """Worker thread para gerar thumbnails de videos sem bloquear a UI."""
@@ -186,7 +205,7 @@ class ThumbnailWorker(QThread):
         return pix
 
 
-class DownloadWorker(QThread):
+class DownloadWorker(BaseWorkerThread):
     """Worker thread para baixar arquivos sem bloquear a UI."""
 
     progress_update = Signal(dict)
@@ -218,8 +237,6 @@ class DownloadWorker(QThread):
         self.picazor_delay = picazor_delay
         self.fapfolder_cookie = fapfolder_cookie
         self.processed_count = 0
-        self.is_paused = False
-        self.stop_requested = False
 
     def progress_callback(self, data):
         if data["type"] == "file_start":
@@ -289,9 +306,12 @@ class DownloadWorker(QThread):
 
     def run(self):
         try:
+            site_type = detect_site_type(self.url)
+            num_workers = self.picazor_threads if site_type == SiteType.PICAZOR else FIXED_FAPELLO_THREADS
+            
             download_orchestrator_with_progress(
                 self.url,
-                workers=self.picazor_threads if "picazor.com" in self.url else FIXED_FAPELLO_THREADS,
+                workers=num_workers,
                 progress_callback=self.progress_callback,
                 target_dir=self.target_dir,
                 download_images=self.download_images,
@@ -307,12 +327,3 @@ class DownloadWorker(QThread):
         except Exception as exc:
             if not self.stop_requested:
                 self.error.emit(f"Erro no download: {str(exc)}")
-
-    def pause(self):
-        self.is_paused = True
-
-    def resume(self):
-        self.is_paused = False
-
-    def stop(self):
-        self.stop_requested = True
