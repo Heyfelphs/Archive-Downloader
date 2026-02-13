@@ -20,6 +20,7 @@ from config import (
 FIXED_PICAZOR_THREADS = 4
 FIXED_PICAZOR_DELAY = 0.1
 from core.fapello_client import get_media_info, get_total_files
+from core.leakgallery_client import LeakgalleryClient
 from core.picazor_client import PicazorClient
 from core.worker import prepare_filename
 from utils.network import download_binary_to_file
@@ -76,6 +77,8 @@ def _extract_site_label(url: str) -> str:
         return "Picazor"
     if "fapello.com" in url:
         return "Fapello"
+    if "leakgallery.com" in url:
+        return "Leakgallery"
     parsed = urlparse(url)
     return parsed.netloc or "Site"
 
@@ -100,6 +103,10 @@ def _media_list_for_index(
                 parsed = urlparse(base_url)
                 base_domain = f"{parsed.scheme}://{parsed.netloc}"
                 media_list[i] = (base_domain + url, media_type)
+    elif "leakgallery.com" in base_url:
+        client = LeakgalleryClient()
+        media = client.get_media_by_id(index)
+        media_list = [(media.url, media.media_type)] if media else []
     else:
         media_list = []
         file_url, media_type = get_media_info(f"{base_url.rstrip('/')}/{index}")
@@ -151,6 +158,8 @@ def download_worker_with_progress(
     referer = None
     if "fapello.com" in base_url or "picazor.com" in base_url:
         referer = f"{base_url.rstrip('/')}/{index}"
+    if "leakgallery.com" in base_url:
+        referer = f"{base_url.rstrip('/')}/{index}"
     for idx, (file_url, media_type) in enumerate(media_list):
         if worker and getattr(worker, "stop_requested", False):
             return
@@ -163,6 +172,9 @@ def download_worker_with_progress(
                 filename = f"{model_name}_{index}_{idx}{ext}"
             else:
                 filename = f"{model_name}_{index}{ext}"
+        elif "leakgallery.com" in base_url:
+            ext = ".mp4" if media_type == "video" else ".jpg"
+            filename = f"{model_name}_{index}{ext}"
         else:
             filename = prepare_filename(file_url, f"{index}_{idx+1}", media_type)
         if progress_callback:
@@ -331,6 +343,22 @@ def download_orchestrator_with_progress(
                         else:
                             consecutive_skips = 0
                         idx += len(chunk)
+            elif "leakgallery.com" in url:
+                if valid_indices is None:
+                    client = LeakgalleryClient()
+                    model_name = _extract_model_name(url)
+                    valid_indices = client.get_media_ids(model_name)
+                valid_indices = list(valid_indices)
+                if max_items is not None:
+                    valid_indices = valid_indices[:max_items]
+                total_expected = len(valid_indices)
+                chunk_size = max(1, workers * 2)
+                for _ in pool.imap_unordered(worker_wrapper, valid_indices, chunksize=chunk_size):
+                    if worker and getattr(worker, "stop_requested", False):
+                        pool.terminate()
+                        pool.join()
+                        was_cancelled = True
+                        raise KeyboardInterrupt("Download stopped by user")
             else:
                 total_expected = get_total_files(url)
                 if max_items is not None:

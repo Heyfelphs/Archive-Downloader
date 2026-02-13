@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 SUPPORTED_SITES = {
     "Fapello": "https://fapello.com",
     "Picazor": "https://picazor.com",
+    "Leakgallery": "https://leakgallery.com",
 }
 
 
@@ -19,6 +20,8 @@ def parse_supported_link(text: str):
         site_label = "Fapello"
     elif "picazor.com" in host:
         site_label = "Picazor"
+    elif "leakgallery.com" in host:
+        site_label = "Leakgallery"
     else:
         return None
     parts = [p for p in parsed.path.split("/") if p]
@@ -43,6 +46,8 @@ def build_url(site_label: str, model_text: str):
         return ""
     if site_label == "Picazor":
         return f"{base}/pt/{model_text}/"
+    if site_label == "Leakgallery":
+        return f"{base}/{model_text}"
     return f"{base}/{model_text}/"
 
 

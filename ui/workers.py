@@ -69,6 +69,25 @@ class FetchWorker(QThread):
                 )
                 total_files = len(valid_indices)
                 print(f"[FetchWorker] Media found: {total_files} files")
+            elif "leakgallery.com" in self.url:
+                print("[FetchWorker] Detected Leakgallery link. Starting analysis...")
+                from core.leakgallery_client import LeakgalleryClient
+
+                client = LeakgalleryClient(delay=self.picazor_delay)
+                if self.stop_requested:
+                    self.error.emit("Analise cancelada")
+                    return
+
+                def progress_wrapper(count: int):
+                    if not self._wait_if_paused():
+                        return
+                    self.progress.emit(count)
+
+                parts = [p for p in self.url.split("/") if p]
+                model = parts[-1] if parts else ""
+                valid_indices = client.get_media_ids(model, progress_callback=progress_wrapper)
+                total_files = len(valid_indices)
+                print(f"[FetchWorker] Media found: {total_files} files")
             else:
                 valid_indices = None
                 total_files = get_fapello_total_files(self.url)
@@ -98,8 +117,6 @@ class FetchWorker(QThread):
     def resume(self):
         self.is_paused = False
         self._pause_event.set()
-
-
 class ThumbnailWorker(QThread):
     """Worker thread para gerar thumbnails de videos sem bloquear a UI."""
 

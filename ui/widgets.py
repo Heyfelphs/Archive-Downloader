@@ -34,22 +34,22 @@ THEMES = {
         "text_muted": "#888888",
         "border": "#444444",
         "border_soft": "#333333",
-        "accent": "#ffbf00",
-        "accent_hover": "#ffc933",
-        "accent_pressed": "#e6a800",
+        "accent": "#7b5cff",
+        "accent_hover": "#8a6bff",
+        "accent_pressed": "#6a4df0",
         "button_bg": "#2d2d2d",
         "button_hover": "#3d3d3d",
         "button_pressed": "#444444",
         "button_disabled_bg": "#1a1a1a",
         "button_disabled_text": "#666666",
-        "progress_primary": "#ffbf00",
-        "progress_secondary": "#3fa9f5",
-        "pause_bg": "#ff6b35",
-        "pause_hover": "#ff8555",
-        "pause_pressed": "#e64820",
-        "cancel_bg": "#7a1f1f",
-        "cancel_hover": "#8f2a2a",
-        "cancel_pressed": "#5c1717",
+        "progress_primary": "#7b5cff",
+        "progress_secondary": "#a58bff",
+        "pause_bg": "#6f4bff",
+        "pause_hover": "#7d5aff",
+        "pause_pressed": "#5f3cf0",
+        "cancel_bg": "#5a2e8a",
+        "cancel_hover": "#6a38a2",
+        "cancel_pressed": "#4b2574",
         "status_ok": "#90EE90",
     },
     "light": {
@@ -62,22 +62,22 @@ THEMES = {
         "text_muted": "#666666",
         "border": "#cccccc",
         "border_soft": "#dddddd",
-        "accent": "#d9a700",
-        "accent_hover": "#e6b300",
-        "accent_pressed": "#c49100",
+        "accent": "#6a49ff",
+        "accent_hover": "#7a5bff",
+        "accent_pressed": "#5839f0",
         "button_bg": "#f0f0f0",
         "button_hover": "#e6e6e6",
         "button_pressed": "#dcdcdc",
         "button_disabled_bg": "#efefef",
         "button_disabled_text": "#9a9a9a",
-        "progress_primary": "#d9a700",
-        "progress_secondary": "#2f89d8",
-        "pause_bg": "#ff7a45",
-        "pause_hover": "#ff8f64",
-        "pause_pressed": "#e35c2f",
-        "cancel_bg": "#a12a2a",
-        "cancel_hover": "#b33636",
-        "cancel_pressed": "#7a1f1f",
+        "progress_primary": "#6a49ff",
+        "progress_secondary": "#9b86ff",
+        "pause_bg": "#6f4bff",
+        "pause_hover": "#7d5aff",
+        "pause_pressed": "#5f3cf0",
+        "cancel_bg": "#6a34a5",
+        "cancel_hover": "#7a3fbd",
+        "cancel_pressed": "#582b8d",
         "status_ok": "#2e8b57",
     },
 }
@@ -547,7 +547,7 @@ def build_ui(parent):
     default_root.mkdir(parents=True, exist_ok=True)
     central_widget.download_root = default_root
     if "destino" in labels_dict:
-        labels_dict["destino"].setVisible(True)
+        labels_dict["destino"].setVisible(False)
 
     def update_destino_label():
         if "destino" not in labels_dict:
@@ -556,8 +556,9 @@ def build_ui(parent):
         if choose_folder_cb is not None and choose_folder_cb.isChecked():
             base_dir = getattr(central_widget, "download_root", Path("catalog") / "models")
             labels_dict["destino"].setText(f"Destino: {base_dir}")
+            labels_dict["destino"].setVisible(True)
         else:
-            labels_dict["destino"].setText("Destino: Pasta Padrão")
+            labels_dict["destino"].setVisible(False)
         labels_dict["destino"].setVisible(True)
 
     central_widget._update_destino_label = update_destino_label
@@ -787,6 +788,7 @@ def create_top_section(parent):
 
         # Create worker thread
         worker = FetchWorker(url, picazor_threads, picazor_batch, picazor_delay)
+        worker.progress.connect(lambda count: on_fetch_progress(parent, count))
         worker.finished.connect(lambda data: on_fetch_complete(parent, data, checar_btn, download_btn))
         worker.error.connect(lambda err: on_fetch_error(parent, err, checar_btn))
         # (Removido: label de arquivos)
@@ -1108,6 +1110,12 @@ def on_fetch_complete(parent, data, checar_btn, download_btn):
     if hasattr(parent, "cancel_btn"):
         parent.cancel_btn.setVisible(False)
         parent.cancel_btn.setEnabled(False)
+
+
+def on_fetch_progress(parent, count: int):
+    if not hasattr(parent, "labels") or "total" not in parent.labels:
+        return
+    parent.labels["total"].setText(f"Total: {count}")
 
 
 def on_fetch_error(parent, error, checar_btn):
@@ -1556,9 +1564,9 @@ def add_log_message(log_widget, message, error=False, warning=False):
 
     # Escape HTML content to prevent markup injection
     escaped_message = html.escape(message)
-    
-    # Linha inteira colorida
-    html_line = f"<span style='color:{color};'><b>{tag}</b> {escaped_message}</span>"
+
+    # Apenas a tag recebe cor; o texto permanece com a cor padrao
+    html_line = f"<span style='color:{color};'><b>{tag}</b></span> {escaped_message}"
 
     if hasattr(log_widget, "_log_buffer") and hasattr(log_widget, "_log_timer"):
         log_widget._log_buffer.append(html_line)
